@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSH Portal</title>
+  <meta name="description" content="Browser-based SSH workspace for machines on your local network: file explorer, split terminals, X11 forwarding (ssh -Y) and a full remote desktop.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0b0d12">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Source+Code+Pro:wght@400;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css">
+  <link rel="stylesheet" href="css/app.css">
+  <script>
+    // apply the saved theme before first paint
+    try { const t = JSON.parse(localStorage.getItem('sshportal.theme')); if (t) document.documentElement.dataset.theme = t; } catch {}
+  </script>
+  <script type="module">
+    if (!('popover' in HTMLElement.prototype)) import('https://cdn.jsdelivr.net/npm/@oddbird/popover-polyfill@0.5.2/dist/popover.min.js');
+  </script>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <!-- ============================================================ connect -->
+  <div id="connect-view" class="connect-view">
+    <header class="cv-top">
+      <div class="brand"><img src="favicon.svg" alt="" width="26" height="26"><span>SSH Portal</span></div>
+      <button class="icon-btn" data-action="theme" data-icon="moon" aria-label="Toggle light / dark theme" title="Toggle theme"></button>
+    </header>
+
+    <main class="cv-main">
+      <section class="cv-intro">
+        <span class="eyebrow"><span class="dot" data-kind="ok"></span> Runs in your browser · talks to your LAN</span>
+        <h1>Your machines,<br><span class="grad">one tab away.</span></h1>
+        <p class="lead">Browse files, open split terminals, launch Linux GUI apps with <code>ssh -Y</code>, or take over the whole remote desktop. Sign in once.</p>
+        <ul class="features">
+          <li><span class="f-ic" data-icon="folder"></span><div><b>File explorer</b><span>Drag-and-drop upload, editor, bookmarks</span></div></li>
+          <li><span class="f-ic" data-icon="splitV"></span><div><b>Terminator-style terminals</b><span>Tabs, splits, broadcast input</span></div></li>
+          <li><span class="f-ic" data-icon="window"></span><div><b>X11 forwarding</b><span>Remote apps open as local windows</span></div></li>
+          <li><span class="f-ic" data-icon="monitor"></span><div><b>Remote desktop</b><span>Full graphical session over SSH</span></div></li>
+        </ul>
+
+        <section id="bridge-card" class="bridge-panel" aria-labelledby="bridge-h" aria-live="polite">
+          <div class="bp-head">
+            <h2 id="bridge-h"><span data-icon="plug"></span>Bridge</h2>
+            <span id="bridge-status" class="pill">Checking…</span>
+          </div>
+          <div id="bp-body"></div>
+          <p id="safari-note" class="callout small" hidden>Safari blocks secure pages from reaching <code>localhost</code>. Use Chrome, Edge or Firefox, or open the copy the bridge serves at <code>http://127.0.0.1:4422/</code>.</p>
+          <details id="bridge-advanced" class="bp-advanced">
+            <summary>Advanced</summary>
+            <form id="bridge-form" class="help-body">
+              <p>The bridge is a small program on <b>your</b> computer that makes the SSH connections for this page (browsers can't). It only listens on <code>127.0.0.1</code>. If your browser asks to allow access to devices on your local network, choose <b>Allow</b>.</p>
+              <label class="field"><span>Pairing token (manual pairing)</span><input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="printed by the bridge"></label>
+              <label class="field"><span>Bridge address</span><input id="bridge-url-input" type="url" placeholder="http://127.0.0.1:4422"></label>
+              <div class="bp-row"><span class="small muted">This page: <code id="hosted-origin"></code></span><button class="btn btn-sm">Save</button></div>
+            </form>
+          </details>
+        </section>
+      </section>
+
+      <section class="cv-card">
+        <header class="cv-card-head">
+          <h2>Connect to a machine</h2>
+          <p class="muted">SSH into any computer on your network.</p>
+        </header>
+        <div id="saved-wrap" class="saved" hidden>
+          <h3>Recent</h3>
+          <ul id="profile-list" class="profile-list"></ul>
+        </div>
+        <form id="connect-form" class="stack" autocomplete="on">
+          <div class="grid-host">
+            <label class="field"><span>Host or IP address</span><input name="host" required placeholder="192.168.1.20 or mypc.local" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>Port</span><input name="port" type="number" value="22" min="1" max="65535"></label>
+          </div>
+          <label class="field"><span>Username</span><input name="username" required autocomplete="username" spellcheck="false" autocapitalize="off"></label>
+          <div class="segmented" role="radiogroup" aria-label="Authentication">
+            <label><input type="radio" name="auth" value="password" checked><span>Password</span></label>
+            <label><input type="radio" name="auth" value="key"><span>Private key</span></label>
+            <label><input type="radio" name="auth" value="agent"><span>Agent / ~/.ssh</span></label>
+          </div>
+          <label class="field" data-auth="password"><span>Password</span><input name="password" type="password" autocomplete="current-password"></label>
+          <div data-auth="key" class="stack">
+            <label class="field"><span>Private key</span><textarea name="privateKey" rows="3" class="mono" spellcheck="false" placeholder="Paste a key, choose a file, or give a path below"></textarea></label>
+            <div class="grid-2">
+              <label class="btn file-btn"><input type="file" id="key-file" hidden><span data-icon="key"></span>Choose key file…</label>
+              <label class="field"><span class="sr-only">Key path</span><input name="keyPath" placeholder="~/.ssh/id_ed25519" spellcheck="false"></label>
+            </div>
+            <label class="field"><span>Passphrase</span><input name="passphrase" type="password" autocomplete="off" placeholder="only if the key is encrypted"></label>
+          </div>
+          <p data-auth="agent" class="muted small">Uses your running SSH agent, then <code>~/.ssh/id_ed25519</code>, <code>id_ecdsa</code> and <code>id_rsa</code> on this computer.</p>
+          <div class="opts">
+            <label class="switch"><input type="checkbox" name="x11" checked><span></span>X11 forwarding (<code>-Y</code>)</label>
+            <label class="switch"><input type="checkbox" name="save" checked><span></span>Remember this machine</label>
+          </div>
+          <label class="field" data-save><span>Display name <span class="muted">(optional)</span></span><input name="name" placeholder="e.g. Lab workstation"></label>
+          <button id="connect-btn" class="btn btn-primary btn-lg">Connect</button>
+          <p class="fine"><span data-icon="lock"></span>Passwords and keys are never stored. Host keys are verified on first use.</p>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <!-- ========================================================== workspace -->
+  <div id="workspace" class="shell" hidden>
+    <nav id="dock" class="rail" aria-label="Main">
+      <img class="rail-logo" src="favicon.svg" alt="SSH Portal" width="28" height="28">
+      <button data-open="files" data-icon="folder" data-tip="Files" aria-label="Files"></button>
+      <button data-open="terminal" data-icon="terminal" data-tip="New terminal · Alt+Shift+T" aria-label="New terminal"></button>
+      <button data-open="desktop" data-icon="monitor" data-tip="Remote desktop" aria-label="Remote desktop"></button>
+      <button data-open="apps" data-icon="grid" data-tip="Applications" aria-label="Applications"></button>
+      <button data-open="system" data-icon="activity" data-tip="System monitor" aria-label="System monitor"></button>
+      <span class="rail-spacer"></span>
+      <button data-action="palette" data-icon="command" data-tip="Command palette · Ctrl+K" aria-label="Command palette"></button>
+      <button data-action="term-settings" data-icon="settings" data-tip="Terminal preferences" aria-label="Terminal preferences"></button>
+      <button data-action="theme" data-icon="moon" data-tip="Toggle theme" aria-label="Toggle theme"></button>
+      <button data-action="disconnect" data-icon="logout" data-tip="Disconnect" aria-label="Disconnect"></button>
+    </nav>
+    <div class="app-main">
+      <header class="appbar">
+        <div id="tabstrip" class="tabstrip" role="tablist" aria-label="Open views"></div>
+        <button class="tab-add" data-open="terminal" data-icon="plus" title="New terminal (Alt+Shift+T)" aria-label="New terminal"></button>
+        <span class="appbar-spacer"></span>
+        <button class="cmdk" data-action="palette"><span data-icon="search"></span><span class="cmdk-text">Search commands</span><kbd>Ctrl K</kbd></button>
+        <div id="session-chip" class="host-chip" title=""><span class="dot" data-kind="ok"></span><span class="chip-text mono"></span></div>
+      </header>
+      <div id="panes" class="panes"></div>
+      <footer class="appstatus" aria-label="Status">
+        <span id="st-conn" class="st"></span>
+        <span id="st-view" class="st"></span>
+        <span class="st-spacer"></span>
+        <button id="st-bcast" class="st st-btn" hidden></button>
+        <span id="st-x11" class="st"></span>
+        <span id="st-latency" class="st mono"></span>
+      </footer>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

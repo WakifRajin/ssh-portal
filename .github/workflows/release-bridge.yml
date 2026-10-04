@@ -1,0 +1,81 @@
+name: Release bridge
+
+# Builds the standalone bridge for every platform and publishes it as the
+# latest GitHub release. The web app downloads from
+#   https://github.com/<owner>/<repo>/releases/latest/download/<asset>
+# Run it from the Actions tab, or push a tag like bridge-v1.2.0.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['bridge-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, asset: ssh-portal-bridge-windows-x64.exe }
+          - { os: macos-latest, asset: ssh-portal-bridge-macos-arm64 }
+          - { os: macos-15-intel, asset: ssh-portal-bridge-macos-x64 }
+          - { os: ubuntu-latest, asset: ssh-portal-bridge-linux-x64 }
+          - { os: ubuntu-24.04-arm, asset: ssh-portal-bridge-linux-arm64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: bridge
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Build
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          name="${GITHUB_REPOSITORY#*/}"
+          if [ "$name" = "$owner.github.io" ]; then app="https://$owner.github.io/"; else app="https://$owner.github.io/$name/"; fi
+          APP_URL="$app" REPO="$GITHUB_REPOSITORY" node build.mjs
+      - name: Smoke test
+        run: ./dist/${{ matrix.asset }} --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: bridge/dist/${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - id: version
+        run: echo "tag=bridge-v$(node -p "require('./bridge/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || steps.version.outputs.tag }}
+          name: SSH Portal bridge ${{ github.ref_type == 'tag' && github.ref_name || steps.version.outputs.tag }}
+          make_latest: true
+          files: assets/*
+          body: |
+            Standalone SSH Portal bridge, no Node.js required. Download the file for your system and run it once:
+            it installs itself for your user, starts in the background, and starts again at login.
+
+            | System | File |
+            |---|---|
+            | Windows | `ssh-portal-bridge-windows-x64.exe` |
+            | macOS (Apple Silicon) | `ssh-portal-bridge-macos-arm64` |
+            | macOS (Intel) | `ssh-portal-bridge-macos-x64` |
+            | Linux x64 | `ssh-portal-bridge-linux-x64` |
+            | Linux ARM64 | `ssh-portal-bridge-linux-arm64` |
+
+            The binaries aren't code-signed: Windows may show SmartScreen (**More info → Run anyway**),
+            and on macOS the one-line installer from the web app avoids the Gatekeeper prompt.
+            Uninstall: run the program with `--uninstall`.
