@@ -36,7 +36,8 @@ jobs:
       - run: npm ci
       - name: Build
         run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          # portable lowercase (macOS runners may use bash 3.2, which lacks ${var,,})
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
           name="${GITHUB_REPOSITORY#*/}"
           if [ "$name" = "$owner.github.io" ]; then app="https://$owner.github.io/"; else app="https://$owner.github.io/$name/"; fi
           APP_URL="$app" REPO="$GITHUB_REPOSITORY" node build.mjs
