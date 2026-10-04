@@ -6,4 +6,4 @@
 export const REPO = '';
 
 // Bridge version this web app expects; older bridges get an "update" prompt.
-export const BRIDGE_VERSION = '1.2.0';
+export const BRIDGE_VERSION = '1.3.0';

@@ -26,6 +26,9 @@ A browser workspace for the Linux machines on your local network: a **file explo
 | **Apps** | A start menu built from the remote's installed `.desktop` applications, with categories and search, plus "run any command". Each app runs either on **This computer (ssh -Y)** or inside the **Browser desktop**. Output and a stop button for each launched app. |
 | **Desktop** | The remote's full graphical desktop in the browser (noVNC). Start a **new virtual desktop** (TigerVNC, or Xvfb + x11vnc, auto-starts XFCE/LXQt/MATE/…), **share the physical screen** (x11vnc), or connect to an existing VNC port. The VNC server binds to the remote's localhost and is reached only through the SSH tunnel. Fit/resize/1:1 scaling, clipboard, Ctrl+Alt+Del, fullscreen. |
 | **System** | Live CPU, memory, swap, uptime, disks and a filterable process list with "end process". |
+| **Network** | A toolbox that works from the remote host's point of view: interfaces, routes, DNS and listening ports (with one-click **Forward**); live per-interface bandwidth graphs; ping, traceroute, DNS lookup, HTTP timing check and whois with streaming output; a port checker with presets; a **LAN scan** that finds devices (IP, name, MAC) with quick Ping / Ports / SSH / Wake actions; **port forwarding** (`ssh -L`) and a **SOCKS5 proxy** (`ssh -D`) on 127.0.0.1; a speed test between you and the remote; and **Wake-on-LAN**. |
+
+**Also:** installable as an app (PWA) with offline start, app shortcuts and `web+ssh://` links. **Data saver** mode (SSH compression, lighter remote desktop, slower polling) with a live traffic meter in the status bar. Automatic **reconnect** that restores your folder and terminal tabs. **Snippets** (saved commands) in the command palette. Drop files onto a terminal to upload them and paste their paths. Save terminal output as text. Activity dots on background terminal tabs, optional bell notifications, **Quick Look** (Space) in Files, Wake buttons on saved machines, and a **?** shortcut sheet.
 
 ## Quick start
 
@@ -122,6 +125,19 @@ ssh-portal-bridge [--install | --uninstall | --background | --foreground] [--no-
 
 sshd allows about 10 channels per connection (`MaxSessions`). The bridge keeps up to 6 terminals on your main connection and opens extra connections (9 terminals each) as needed. These reuse the authentication method that already worked, and close themselves when their last terminal does.
 
+## Installing as an app (PWA)
+
+In Chrome or Edge, use the **Install** button in the app (or the install icon in the address bar). You get:
+
+* its own window, with the tabs drawn in the title bar (window controls overlay)
+* a taskbar/Dock icon, with shortcuts for **New terminal**, **Files** and **Network tools**
+* an instant start that works without internet (your LAN and the bridge don't need it)
+* the app registers as the handler for `web+ssh://user@host:port` links
+
+Deep links also work in the browser: `https://<you>.github.io/ssh-portal/?connect=user@host:2222` pre-fills the form and connects straight away if that machine is saved with key or agent login.
+
+New versions show an **Update** button; the app never reloads under an active session.
+
 ## Security model
 
 * The bridge binds to **127.0.0.1** only. Other machines on the network can't use it.
@@ -129,10 +145,12 @@ sshd allows about 10 channels per connection (`MaxSessions`). The bridge keeps u
 * Host keys are verified (TOFU) and stored in `~/.ssh-portal/known_hosts.json`.
 * Passwords and keys are never saved by the web app. Saved connections keep only host, port, username, auth type and an optional key *path*.
 * VNC servers listen on the remote's localhost, use a VNC password, and are reachable only through SSH.
+* Port forwards and the SOCKS proxy listen on 127.0.0.1 only and close when you disconnect. Network tool inputs are validated on the bridge (hostnames/IPs only, nothing that looks like a command-line option), so they can't inject shell commands.
+* "Reconnect" keeps your credentials in memory for the current tab only; they're never written to storage.
 
 ## Keyboard shortcuts
 
-Press **Ctrl+K** (or Ctrl+Shift+P) anywhere for the command palette, which lists every action.
+Press **Ctrl+K** anywhere (**Ctrl+Shift+P** inside a terminal, where Ctrl+K stays readline's kill-line) for the command palette, which lists every action, including Network tools and your snippets. Press **?** for the shortcut sheet.
 
 **Terminals** (Terminator bindings where the browser allows):
 
@@ -158,6 +176,7 @@ Browsers reserve Ctrl+Shift+W and Ctrl+Shift+T, so SSH Portal uses Alt+Shift+W a
 | Keys | Action |
 |---|---|
 | Ctrl+PageUp / PageDown, Alt+1…9 | Switch tabs (you can also drag tabs to reorder them) |
+| Files: Space | Quick Look (peek at a text file or image) |
 | Files: Enter, Backspace, Del, F2, F5, Ctrl+A/C/X/V, Ctrl+H, Alt+←/→ | Open, up, delete, rename, refresh, select all, copy/cut/paste, hidden files, history |
 | Editor: Ctrl+S | Save |
 

@@ -224,6 +224,33 @@ export function createFileExplorer(session, info, actions) {
     actions.openEditor(entry.path);
   }
 
+  // Space: peek at a file without opening an editor tab.
+  async function quickLook(entry) {
+    if (entry.type === 'dir') return properties(entry);
+    const kind = fileKind(entry);
+    if (kind === 'image') return preview(entry);
+    if (!(kind === 'code' || isTextLike(entry.name)) || entry.size > 1 << 20) return properties(entry);
+    try {
+      const r = await session.req('readText', { path: entry.path, max: 1 << 20 });
+      if (r.binary) return properties(entry);
+      const text = r.content.length > 200000 ? r.content.slice(0, 200000) + '\n…' : r.content;
+      const res = await modal({
+        title: entry.name,
+        wide: true,
+        body: `<pre class="quicklook mono">${esc(text)}</pre><p class="muted small">${formatBytes(entry.size)} · ${formatDate(entry.mtime)} · Space or Esc to close</p>`,
+        buttons: [
+          { label: 'Edit', value: 'edit' },
+          { label: 'Close', value: true, primary: true },
+        ],
+        onOpen: (dlg) => dlg.addEventListener('keydown', (ev) => ev.key === ' ' && (ev.preventDefault(), $('button[type=submit]', dlg).click())),
+      });
+      if (res.value === 'edit') actions.openEditor(entry.path);
+      listing.focus();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
   async function preview(entry) {
     try {
       const blob = await session.fetchBlob(entry.path);
@@ -579,6 +606,7 @@ export function createFileExplorer(session, info, actions) {
     else if (e.key === 'ArrowRight' && state.view === 'grid') move(1);
     else if (e.key === 'ArrowLeft' && state.view === 'grid') move(-1);
     else if (e.key === 'Enter' && sel.length === 1) open(sel[0]);
+    else if (e.key === ' ' && sel.length === 1) quickLook(sel[0]);
     else if (e.key === 'Backspace') navigate(dirname(state.cwd));
     else if (e.key === 'Delete') remove(sel);
     else if (e.key === 'F2' && sel.length === 1) rename(sel[0]);

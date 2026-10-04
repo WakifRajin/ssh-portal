@@ -3,6 +3,7 @@
 
 import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.7.0/core/rfb.js';
 import { h, $, icon, esc, toast, modal } from './ui.js';
+import { getPrefs, onPrefs } from './prefs.js';
 
 export function createDesktop(session, info, appState) {
   const prefKey = 'sshportal.desktop';
@@ -115,6 +116,7 @@ export function createDesktop(session, info, appState) {
     screen.innerHTML = '';
     rfb = new RFB(screen, url, { credentials: { password: password || '' }, shared: true });
     applyScale();
+    applyQuality();
     rfb.focusOnClick = true;
     rfb.addEventListener('connect', () => {
       status(`Connected · ${info.host}${current.display != null ? ` :${current.display}` : ''}`, 'ok');
@@ -136,6 +138,15 @@ export function createDesktop(session, info, appState) {
     rfb.addEventListener('clipboard', (e) => navigator.clipboard?.writeText(e.detail.text).catch(() => {}));
     rfb.addEventListener('desktopname', (e) => status(`Connected · ${e.detail.name}`, 'ok'));
   }
+
+  // Data saver: stronger JPEG compression and zlib level for VNC updates.
+  function applyQuality() {
+    if (!rfb) return;
+    const saver = getPrefs().dataSaver;
+    rfb.qualityLevel = saver ? 2 : 6;
+    rfb.compressionLevel = saver ? 9 : 2;
+  }
+  onPrefs((p, patch) => 'dataSaver' in patch && applyQuality());
 
   function applyScale() {
     if (!rfb) return;

@@ -27,6 +27,7 @@ export class BridgeSession extends EventTarget {
     this.pending = new Map();
     this.termHandlers = new Map();
     this.appHandlers = new Map();
+    this.streamHandlers = new Map();
     // async (payload) => reply value; set by the app
     this.onHostKey = async () => false;
     this.onPrompt = async () => null;
@@ -92,6 +93,13 @@ export class BridgeSession extends EventTarget {
       case 'app-exit':
         this.appHandlers.get(msg.aid)?.exit(msg);
         break;
+      case 'stream-data':
+        this.streamHandlers.get(msg.sid)?.data(msg.data);
+        break;
+      case 'stream-exit':
+        this.streamHandlers.get(msg.sid)?.exit(msg.code);
+        this.streamHandlers.delete(msg.sid);
+        break;
       case 'event':
         this.dispatchEvent(new CustomEvent(msg.kind, { detail: msg }));
         break;
@@ -135,6 +143,14 @@ export class BridgeSession extends EventTarget {
     const res = await this.req('app.launch', { command, target, display });
     if (res.aid) this.appHandlers.set(res.aid, { data: onData, exit: onExit });
     return res;
+  }
+
+  // -------------------------------------------------------------- streams ---
+  // Runs a network diagnostic on the remote and streams its output.
+  async startTool(tool, target, opts, onData, onExit) {
+    const { sid, command } = await this.req('stream.start', { tool, target, ...opts });
+    this.streamHandlers.set(sid, { data: onData, exit: onExit });
+    return { sid, command, stop: () => this.req('stream.stop', { sid }).catch(() => {}) };
   }
 
   // ---------------------------------------------------------------- files ---

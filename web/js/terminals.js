@@ -6,7 +6,10 @@ import { Terminal } from 'https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/+esm';
 import { FitAddon } from 'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/+esm';
 import { SearchAddon } from 'https://cdn.jsdelivr.net/npm/@xterm/addon-search@0.16.0/+esm';
 import { WebLinksAddon } from 'https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.12.0/+esm';
-import { h, $, $$, icon, esc, toast, contextMenu, modal } from './ui.js';
+import { h, $, $$, icon, esc, toast, contextMenu, modal, formatBytes } from './ui.js';
+import { getPrefs } from './prefs.js';
+
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 // ------------------------------------------------------------------ themes ---
 const TANGO = ['#2e3436', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', '#06989a', '#d3d7cf', '#555753', '#ef2929', '#8ae234', '#fce94f', '#729fcf', '#ad7fa8', '#34e2e2', '#eeeeec'];
@@ -77,6 +80,17 @@ export function setBroadcast(mode) {
 
 function fontStack(f) {
   return `"${f}", "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace`;
+}
+
+// The app's liquid-glass theme makes the default (Portal) scheme translucent.
+function effectiveTheme() {
+  const t = THEMES[settings.theme] || THEMES.portal;
+  if (document.documentElement.dataset.theme !== 'glass' || settings.theme !== 'portal') return t;
+  return { ...t, background: 'rgba(10, 12, 26, 0.55)', cursorAccent: '#0a0c1a', selectionBackground: 'rgba(154, 176, 255, 0.35)' };
+}
+
+export function refreshTerminalAppearance() {
+  for (const p of allPanes) p.applySettings();
 }
 
 export function applyTerminalSettings(patch) {
@@ -153,7 +167,7 @@ function loadFonts() {
 // ------------------------------------------------------------------ layout ---
 // One workspace tab = one layout = a binary tree of split panes, kept directly
 // in the DOM: a .tsplit holds [child, .gutter, child]; leaves are .tpane.
-export function createTerminalLayout(session, info, { cwd, command, title, onTitle, onEmpty, onNewTab } = {}) {
+export function createTerminalLayout(session, info, { cwd, command, title, onTitle, onEmpty, onNewTab, onActivity } = {}) {
   const el = h(`<div class="term-layout${settings.titlebars ? '' : ' no-titlebars'}"><div class="tbody"></div></div>`);
   const body = $('.tbody', el);
   const panes = new Set();
@@ -172,6 +186,14 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
     split: (dir) => focused && splitPane(focused, dir),
     zoom: () => focused && toggleZoom(focused),
     closeFocused: () => focused && closePane(focused),
+    // used by snippets: goes through the same path as typing (honours broadcast)
+    typeIntoFocused: (text) => {
+      const p = focused || [...panes][0];
+      if (!p) return;
+      p.term.paste(text.replace(/\r$/, ''));
+      if (text.endsWith('\r')) p.send('\r');
+      p.focus();
+    },
     focused: () => focused,
     show() {
       visible = true;
@@ -272,7 +294,7 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
         term.dispose();
       },
     };
-    pel.style.setProperty('--term-bg', THEMES[settings.theme]?.background || '#000');
+    pel.style.setProperty('--term-bg', effectiveTheme().background);
     titleEl.textContent = pane.title;
 
     const ro = new ResizeObserver(() => {
@@ -295,18 +317,54 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
     term.onBell(() => {
       pel.classList.add('bell');
       setTimeout(() => pel.classList.remove('bell'), 400);
+      if (getPrefs().notifyBell && (document.hidden || !visible) && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(`Terminal bell · ${pane.title}`, { body: `${info.username}@${info.host}`, tag: 'ssh-portal-bell', icon: 'icons/icon-192.png' });
+      }
+    });
+
+    // Drop files on a terminal: upload them to the shell's home directory and
+    // type their (quoted) paths, like dragging into a local terminal.
+    pel.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer.types.includes('Files')) return;
+      e.preventDefault();
+      pel.classList.add('drop');
+    });
+    pel.addEventListener('dragleave', (e) => !pel.contains(e.relatedTarget) && pel.classList.remove('drop'));
+    pel.addEventListener('drop', async (e) => {
+      if (!e.dataTransfer.files.length) return;
+      e.preventDefault();
+      pel.classList.remove('drop');
+      const files = [...e.dataTransfer.files];
+      const t = toast(`Uploading ${files.length} file(s) to ~ …`, 'info', 1e9);
+      const paths = [];
+      try {
+        for (const f of files) {
+          const dest = `${info.home}/${f.name}`;
+          await session.upload(f, dest, (n) => ($('span', t).textContent = `Uploading ${f.name} · ${Math.round((n / Math.max(1, f.size)) * 100)}%`));
+          paths.push(dest);
+        }
+        term.paste(paths.map(shq).join(' ') + ' ');
+        toast(`Uploaded ${formatBytes(files.reduce((s, f) => s + f.size, 0))} to your home folder`, 'success');
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        t.remove();
+      }
+      term.focus();
     });
     term.onSelectionChange(() => {
       if (settings.copyOnSelect && term.hasSelection()) navigator.clipboard?.writeText(term.getSelection()).catch(() => {});
     });
-    term.onData((d) => {
+    // keystrokes go to this shell and, when broadcasting, to the others too
+    pane.send = (d) => {
       if (ended) return closePane(pane);
       shell?.write(d);
       if (broadcast !== 'off') {
         const targets = broadcast === 'all' ? allPanes : panes;
         for (const p of targets) if (p !== pane) p.write(d);
       }
-    });
+    };
+    term.onData((d) => pane.send(d));
     term.attachCustomKeyEventHandler((e) => handleKey(e, pane));
 
     pel.addEventListener('focusin', () => setFocus(pane));
@@ -367,7 +425,10 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
       try {
         shell = await session.openTerminal(
           { cols: term.cols, rows: term.rows, cwd: opts.cwd, command: opts.command, x11: info.x11 !== false },
-          (data) => term.write(data),
+          (data) => {
+            term.write(data);
+            if (!visible) onActivity?.();
+          },
           () => {
             shell = null;
             ended = true;
@@ -394,7 +455,8 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
       cursorStyle: settings.cursorStyle,
       cursorBlink: settings.cursorBlink,
       scrollback: settings.scrollback,
-      theme: THEMES[settings.theme] || THEMES.portal,
+      theme: effectiveTheme(),
+      allowTransparency: true,
       allowProposedApi: true,
       macOptionIsMeta: true,
       rightClickSelectsWord: false,
@@ -535,6 +597,20 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
     }
   }
 
+  // Whole scrollback as a .txt download.
+  function saveOutput(pane) {
+    const buf = pane.term.buffer.active;
+    const lines = [];
+    for (let i = 0; i < buf.length; i++) lines.push(buf.getLine(i)?.translateToString(true) ?? '');
+    while (lines.length && !lines.at(-1)) lines.pop();
+    const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${info.host}-terminal-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
   async function paste(pane) {
     try {
       const t = await navigator.clipboard.readText();
@@ -551,6 +627,9 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
     const altShift = e.altKey && e.shiftKey && !e.ctrlKey;
     const alt = e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey;
     const code = e.code;
+    // App-level shortcuts: let them bubble to the workspace instead of the shell
+    // (Ctrl+K stays with the shell: it's readline's kill-line).
+    if ((ctrlShift && code === 'KeyP') || (e.ctrlKey && (e.key === 'PageUp' || e.key === 'PageDown')) || (alt && /^Digit[1-9]$/.test(code))) return false;
     let handled = true;
     if (ctrlShift && code === 'KeyE') splitPane(pane, 'row');
     else if (ctrlShift && code === 'KeyO') splitPane(pane, 'col');
@@ -595,6 +674,7 @@ export function createTerminalLayout(session, info, { cwd, command, title, onTit
       { label: broadcast === 'all' ? '✓ Broadcast to all terminals' : 'Broadcast to all terminals', icon: 'broadcast', hint: 'Alt+A', action: () => setBroadcast(broadcast === 'all' ? 'off' : 'all') },
       '-',
       { label: 'Clear scrollback', icon: 'refresh', hint: 'Ctrl+Shift+G', action: () => pane.term.clear() },
+      { label: 'Save output as text…', icon: 'download', action: () => saveOutput(pane) },
       { label: 'Preferences…', icon: 'settings', action: openTerminalSettings },
       { label: 'Close pane', icon: 'x', hint: 'Alt+Shift+W', danger: true, action: () => closePane(pane) },
     ]);

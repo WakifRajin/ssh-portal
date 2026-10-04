@@ -1,6 +1,7 @@
 // System monitor: CPU, memory, disks and processes of the remote host.
 
 import { h, $, icon, esc, toast, confirmBox, formatBytes, formatDuration } from './ui.js';
+import { interval } from './prefs.js';
 
 export function createSystem(session) {
   const el = h(`<div class="system">
@@ -99,7 +100,7 @@ export function createSystem(session) {
     clearTimeout(timer);
     if (!visible) return;
     if ($('.p-live', el).checked || !last) await refresh();
-    timer = setTimeout(loop, 3000);
+    timer = setTimeout(loop, interval(3000));
   };
 
   return {

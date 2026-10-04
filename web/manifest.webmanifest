@@ -1,0 +1,25 @@
+{
+  "name": "SSH Portal",
+  "short_name": "SSH Portal",
+  "description": "Files, split terminals, X11 apps, remote desktop and network tools for the machines on your network.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "categories": ["developer", "utilities", "productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "New terminal", "short_name": "Terminal", "url": "./?open=terminal", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Files", "url": "./?open=files", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Network tools", "short_name": "Network", "url": "./?open=network", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ],
+  "protocol_handlers": [{ "protocol": "web+ssh", "url": "./?connect=%s" }],
+  "launch_handler": { "client_mode": ["focus-existing", "auto"] }
+}

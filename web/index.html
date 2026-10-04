@@ -4,10 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SSH Portal</title>
-  <meta name="description" content="Browser-based SSH workspace for machines on your local network: file explorer, split terminals, X11 forwarding (ssh -Y) and a full remote desktop.">
+  <meta name="description" content="Browser-based SSH workspace for machines on your local network: file explorer, split terminals, Linux GUI apps and a full remote desktop.">
   <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#0b0d12">
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="SSH Portal">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Source+Code+Pro:wght@400;700&display=swap">
@@ -27,14 +32,16 @@
   <div id="connect-view" class="connect-view">
     <header class="cv-top">
       <div class="brand"><img src="favicon.svg" alt="" width="26" height="26"><span>SSH Portal</span></div>
-      <button class="icon-btn" data-action="theme" data-icon="moon" aria-label="Toggle light / dark theme" title="Toggle theme"></button>
+      <div class="cv-top-actions">
+        <button class="btn btn-sm" data-action="install" data-icon="download" hidden>Install app</button>
+        <button class="icon-btn" data-action="theme" data-icon="moon" aria-label="Toggle light / dark theme" title="Toggle theme"></button>
+      </div>
     </header>
 
     <main class="cv-main">
       <section class="cv-intro">
-        <span class="eyebrow"><span class="dot" data-kind="ok"></span> Runs in your browser · talks to your LAN</span>
         <h1>Your machines,<br><span class="grad">one tab away.</span></h1>
-        <p class="lead">Browse files, open split terminals, launch Linux GUI apps with <code>ssh -Y</code>, or take over the whole remote desktop. Sign in once.</p>
+        <p class="lead">Browse files, open split terminals, launch Linux GUI apps, or take over the whole remote desktop. Sign in once.</p>
         <ul class="features">
           <li><span class="f-ic" data-icon="folder"></span><div><b>File explorer</b><span>Drag-and-drop upload, editor, bookmarks</span></div></li>
           <li><span class="f-ic" data-icon="splitV"></span><div><b>Terminator-style terminals</b><span>Tabs, splits, broadcast input</span></div></li>
@@ -92,10 +99,17 @@
           </div>
           <p data-auth="agent" class="muted small">Uses your running SSH agent, then <code>~/.ssh/id_ed25519</code>, <code>id_ecdsa</code> and <code>id_rsa</code> on this computer.</p>
           <div class="opts">
-            <label class="switch"><input type="checkbox" name="x11" checked><span></span>X11 forwarding (<code>-Y</code>)</label>
+            <label class="switch"><input type="checkbox" name="x11" checked><span></span>X11 forwarding</label>
             <label class="switch"><input type="checkbox" name="save" checked><span></span>Remember this machine</label>
           </div>
           <label class="field" data-save><span>Display name <span class="muted">(optional)</span></span><input name="name" placeholder="e.g. Lab workstation"></label>
+          <details class="more-opts">
+            <summary>More options</summary>
+            <div class="stack">
+              <label class="switch"><input type="checkbox" name="dataSaver"><span></span><div><b>Data saver</b><small>Compress SSH traffic and go easy on polling. Good for Wi-Fi, VPN and mobile links.</small></div></label>
+              <label class="field"><span>MAC address for Wake-on-LAN <span class="muted">(optional)</span></span><input name="mac" placeholder="aa:bb:cc:dd:ee:ff" spellcheck="false" autocomplete="off"></label>
+            </div>
+          </details>
           <button id="connect-btn" class="btn btn-primary btn-lg">Connect</button>
           <p class="fine"><span data-icon="lock"></span>Passwords and keys are never stored. Host keys are verified on first use.</p>
         </form>
@@ -112,9 +126,11 @@
       <button data-open="desktop" data-icon="monitor" data-tip="Remote desktop" aria-label="Remote desktop"></button>
       <button data-open="apps" data-icon="grid" data-tip="Applications" aria-label="Applications"></button>
       <button data-open="system" data-icon="activity" data-tip="System monitor" aria-label="System monitor"></button>
+      <button data-open="network" data-icon="broadcast" data-tip="Network tools" aria-label="Network tools"></button>
       <span class="rail-spacer"></span>
       <button data-action="palette" data-icon="command" data-tip="Command palette · Ctrl+K" aria-label="Command palette"></button>
-      <button data-action="term-settings" data-icon="settings" data-tip="Terminal preferences" aria-label="Terminal preferences"></button>
+      <button data-action="install" data-icon="download" data-tip="Install app" aria-label="Install app" hidden></button>
+      <button data-action="settings" data-icon="settings" data-tip="Preferences" aria-label="Preferences"></button>
       <button data-action="theme" data-icon="moon" data-tip="Toggle theme" aria-label="Toggle theme"></button>
       <button data-action="disconnect" data-icon="logout" data-tip="Disconnect" aria-label="Disconnect"></button>
     </nav>
@@ -132,7 +148,9 @@
         <span id="st-view" class="st"></span>
         <span class="st-spacer"></span>
         <button id="st-bcast" class="st st-btn" hidden></button>
+        <button id="st-saver" class="st st-btn st-saver" title="Data saver is on (click to turn off)" hidden>Data saver</button>
         <span id="st-x11" class="st"></span>
+        <button id="st-traffic" class="st st-traffic mono" aria-label="SSH traffic">↓ — ↑ —</button>
         <span id="st-latency" class="st mono"></span>
       </footer>
     </div>

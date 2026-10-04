@@ -97,3 +97,38 @@ df -kP -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null | tai
 echo "--PS--"
 ps -eo pid=,user=,pcpu=,pmem=,etime=,comm= --sort=-pcpu 2>/dev/null | head -n 60
 `;
+
+// LAN discovery from the remote host: ping-sweep its /24, then read the
+// neighbour table. Prints "IFACE name addr/prefix" and "HOST ip mac name".
+export const NET_SCAN = String.raw`
+command -v ip >/dev/null 2>&1 || { echo "ERROR: the 'ip' command is not available on the remote"; exit 2; }
+ip -4 -o addr show scope global | awk '{print "IFACE " $2 " " $4}'
+SELF=$(ip -4 -o addr show scope global | awk '{split($4,a,"/"); print a[1]; exit}')
+[ -n "$SELF" ] || { echo "ERROR: the remote has no IPv4 address"; exit 2; }
+echo "SELF $SELF"
+BASE=$(echo "$SELF" | cut -d. -f1-3)
+i=1
+while [ $i -le 254 ]; do
+  ( ping -c 1 -W 1 "$BASE.$i" >/dev/null 2>&1 ) &
+  i=$((i + 1))
+done
+wait
+ip -4 neigh show | awk '$0 !~ /FAILED|INCOMPLETE/ {mac=""; for (i = 1; i <= NF; i++) if ($i == "lladdr") mac = $(i + 1); print $1 " " mac}' | sort -u -t. -k4,4n | while read -r IP MAC; do
+  case "$IP" in "$BASE".*) ;; *) continue ;; esac
+  NAME=$(getent hosts "$IP" 2>/dev/null | awk '{print $2; exit}')
+  [ -n "$MAC" ] || MAC=-
+  [ -n "$NAME" ] || NAME=-
+  echo "HOST $IP $MAC $NAME"
+done
+NAME=$(hostname 2>/dev/null)
+[ -n "$NAME" ] || NAME=-
+echo "HOST $SELF self $NAME"
+`;
+
+export const NET_INFO = String.raw`
+echo "--ADDR--"; (ip -br addr 2>/dev/null || ifconfig 2>/dev/null)
+echo "--ROUTE--"; (ip route 2>/dev/null || netstat -rn 2>/dev/null)
+echo "--DNS--"; grep -E '^(nameserver|search)' /etc/resolv.conf 2>/dev/null
+echo "--LISTEN--"; (ss -tulpnH 2>/dev/null || ss -tulnH 2>/dev/null || netstat -tuln 2>/dev/null | tail -n +3)
+echo "--CONN--"; (ss -tnpH state established 2>/dev/null || ss -tnH state established 2>/dev/null) | head -n 200
+`;

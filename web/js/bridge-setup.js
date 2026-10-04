@@ -53,6 +53,12 @@ export function createBridgeSetup({ settings, LS, onChange }) {
 
   // ---------------------------------------------------------------- check ---
   async function check() {
+    // The copy of the app a bridge serves itself talks to that same bridge,
+    // unless an address was chosen explicitly under Advanced.
+    if (!LS.get('bridge', null) && /^(127\.0\.0\.1|localhost|\[::1\])$/.test(location.hostname) && location.origin !== bridgeOrigin()) {
+      const own = await probeBridge(location.origin);
+      if (own) settings.bridge = location.origin;
+    }
     health = await probeBridge(settings.bridge);
     if (!health) {
       info = null;

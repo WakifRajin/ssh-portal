@@ -1,11 +1,13 @@
 import { DEFAULT_BRIDGE, BridgeSession } from './bridge.js';
 import { createBridgeSetup } from './bridge-setup.js';
-import { $, $$, h, icon, esc, toast, modal, confirmBox, promptBox, contextMenu } from './ui.js';
+import { $, $$, h, icon, esc, toast, modal, confirmBox, promptBox, contextMenu, formatBytes } from './ui.js';
 import { createFileExplorer } from './files.js';
 import { createEditor } from './editor.js';
 import { createApps } from './apps.js';
 import { createSystem } from './system.js';
 import { openPalette } from './palette.js';
+import { createNetwork } from './network.js';
+import { getPrefs, setPrefs, onPrefs, interval } from './prefs.js';
 
 const LS = {
   get: (k, d) => {
@@ -27,19 +29,34 @@ function hydrateIcons(root = document) {
 hydrateIcons();
 
 // ------------------------------------------------------------------ theme ---
+// Themes: dark, light and "glass" (liquid glass); no explicit choice = system.
+const THEME_NAMES = { dark: 'Dark', light: 'Light', glass: 'Liquid glass' };
+const THEME_CYCLE = { dark: 'light', light: 'glass', glass: 'dark' };
+const THEME_ICON = { dark: 'moon', light: 'sun', glass: 'droplet' };
+
 function currentTheme() {
   return document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 }
 function syncThemeIcons() {
-  const next = currentTheme() === 'dark' ? 'sun' : 'moon';
-  for (const b of $$('[data-action="theme"]')) b.innerHTML = icon(next);
+  const next = THEME_CYCLE[currentTheme()] || 'dark';
+  for (const b of $$('[data-action="theme"]')) {
+    b.innerHTML = icon(THEME_ICON[next]);
+    b.title = `Switch to ${THEME_NAMES[next]} theme`;
+    if (b.dataset.tip) b.dataset.tip = `Theme: ${THEME_NAMES[next]} next`;
+  }
+  // browser / installed-app title bar colour
+  const explicit = document.documentElement.dataset.theme;
+  const color = { dark: '#0b0d12', light: '#f5f6f8', glass: '#0d1020' }[explicit];
+  for (const m of $$('meta[name="theme-color"]')) m.content = color || (m.media.includes('light') ? '#f5f6f8' : '#0b0d12');
 }
-function toggleTheme() {
-  const t = currentTheme() === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = t;
-  LS.set('theme', t);
+function setTheme(t) {
+  if (!t || t === 'system') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  LS.set('theme', !t || t === 'system' ? null : t);
   syncThemeIcons();
+  termMod?.refreshTerminalAppearance();
 }
+const toggleTheme = () => setTheme(THEME_CYCLE[currentTheme()] || 'dark');
 syncThemeIcons();
 
 // --------------------------------------------------------------- pairing ---
@@ -83,11 +100,24 @@ function renderProfiles() {
         <span class="avatar" style="--h:${[...p.host].reduce((a, c) => a + c.charCodeAt(0), 0) % 360}">${esc((p.name || p.host)[0].toUpperCase())}</span>
         <span class="p-text"><b>${esc(p.name || p.host)}</b><small>${esc(p.username)}@${esc(p.host)}${+p.port !== 22 ? ':' + esc(p.port) : ''}</small></span>
         <span class="p-auth">${esc({ password: 'password', key: 'key', agent: 'agent' }[p.auth] || '')}</span></button>
+        ${p.mac ? `<button type="button" class="icon-btn sm" data-wake="${i}" aria-label="Wake ${esc(p.name || p.host)}" title="Wake-on-LAN">${icon('power')}</button>` : ''}
         <button type="button" class="icon-btn sm" data-del="${i}" aria-label="Forget ${esc(p.name || p.host)}" title="Forget">${icon('x')}</button></li>`,
     )
     .join('');
 }
-$('#profile-list').addEventListener('click', (e) => {
+$('#profile-list').addEventListener('click', async (e) => {
+  const wake = e.target.closest('[data-wake]');
+  if (wake) {
+    const p = profiles()[+wake.dataset.wake];
+    try {
+      const r = await fetch(`${settings.bridge}/api/wol?mac=${encodeURIComponent(p.mac)}`, { method: 'POST', headers: { authorization: `Bearer ${settings.token}` } });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'The bridge must be running and paired');
+      toast(`Wake-on-LAN packet sent to ${p.name || p.host}. Give it a moment to boot.`, 'success', 6000);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    return;
+  }
   const del = e.target.closest('[data-del]');
   if (del) {
     const ps = profiles();
@@ -98,7 +128,7 @@ $('#profile-list').addEventListener('click', (e) => {
   const b = e.target.closest('[data-i]');
   if (!b) return;
   const p = profiles()[+b.dataset.i];
-  for (const k of ['host', 'port', 'username', 'keyPath', 'name']) form[k].value = p[k] ?? '';
+  for (const k of ['host', 'port', 'username', 'keyPath', 'name', 'mac']) form[k].value = p[k] ?? '';
   form.auth.value = p.auth || 'password';
   form.x11.checked = p.x11 !== false;
   syncForm();
@@ -112,7 +142,10 @@ function syncForm() {
   for (const el of $$('[data-auth]', form)) el.hidden = el.dataset.auth !== a;
   $('[data-save]', form).hidden = !form.save.checked;
 }
-form.addEventListener('change', syncForm);
+form.addEventListener('change', (e) => {
+  if (e.target.name === 'dataSaver') setPrefs({ dataSaver: e.target.checked });
+  syncForm();
+});
 $('#key-file').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   if (f) form.privateKey.value = await f.text();
@@ -121,6 +154,29 @@ $('#key-file').addEventListener('change', async (e) => {
 const connectLabel = () => `${icon('plug')}<span>Connect</span>`;
 $('#connect-btn').innerHTML = connectLabel();
 
+// Connection details of the current session, kept in memory only (never
+// stored) so "Reconnect" works after a network blip.
+let lastArgs = null;
+
+async function openSession(args) {
+  if (!(await bridgeSetup.ensureReady())) {
+    throw new Error(bridgeSetup.state === 'unpaired' ? 'Pair this browser with the bridge first (see the Bridge panel).' : "The bridge isn't running yet. Follow the steps in the Bridge panel.");
+  }
+  const s = new BridgeSession(settings.bridge, settings.token);
+  s.onHostKey = hostKeyDialog;
+  s.onPrompt = promptDialog;
+  await s.open();
+  try {
+    info = await s.req('connect', { ...args, compress: getPrefs().dataSaver });
+  } catch (e) {
+    s.close();
+    throw e;
+  }
+  info.x11 = args.x11;
+  session = s;
+  lastArgs = args;
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const v = Object.fromEntries(new FormData(form));
@@ -128,13 +184,6 @@ form.addEventListener('submit', async (e) => {
   btn.disabled = true;
   btn.innerHTML = `<span class="spinner"></span><span>Connecting to ${esc(v.host)}…</span>`;
   try {
-    if (!(await bridgeSetup.ensureReady())) {
-      throw new Error(bridgeSetup.state === 'unpaired' ? 'Pair this browser with the bridge first (see the Bridge panel).' : "The bridge isn't running yet. Follow the steps in the Bridge panel.");
-    }
-    session = new BridgeSession(settings.bridge, settings.token);
-    session.onHostKey = hostKeyDialog;
-    session.onPrompt = promptDialog;
-    await session.open();
     const args = { host: v.host.trim(), port: +v.port || 22, username: v.username.trim(), x11: form.x11.checked, agent: v.auth !== 'key' };
     if (v.auth === 'password') args.password = v.password;
     if (v.auth === 'key') {
@@ -142,19 +191,16 @@ form.addEventListener('submit', async (e) => {
       else if (v.keyPath.trim()) args.keyPath = v.keyPath.trim();
       args.passphrase = v.passphrase;
     }
-    info = await session.req('connect', args);
-    info.x11 = form.x11.checked;
+    await openSession(args);
     if (form.save.checked) {
       const ps = profiles().filter((p) => !(p.host === args.host && p.username === args.username && +p.port === args.port));
-      ps.unshift({ name: v.name, host: args.host, port: args.port, username: args.username, auth: v.auth, keyPath: v.keyPath, x11: form.x11.checked });
+      ps.unshift({ name: v.name, host: args.host, port: args.port, username: args.username, auth: v.auth, keyPath: v.keyPath, x11: form.x11.checked, mac: v.mac.trim() || undefined });
       LS.set('profiles', ps.slice(0, 12));
     }
     form.password.value = '';
     form.passphrase.value = '';
     enterWorkspace();
   } catch (err) {
-    session?.close();
-    session = null;
     toast(err.message, 'error', 7000);
     checkBridge();
   } finally {
@@ -227,6 +273,7 @@ function activate(id) {
   }
   activeId = id;
   t.view.el.hidden = false;
+  t.tabEl.classList.remove('activity');
   t.tabEl.classList.add('active');
   t.tabEl.setAttribute('aria-selected', 'true');
   t.tabEl.scrollIntoView({ inline: 'nearest', block: 'nearest' });
@@ -239,7 +286,7 @@ async function closeTab(id) {
   const t = tabs.get(id);
   if (!t) return;
   if (t.view.canClose && !(await t.view.canClose())) return;
-  if (t.kind === 'terminal' && t.view.paneCount > 1 && !(await confirmBox('Close tab?', `This tab has ${t.view.paneCount} terminals. Close all of them?`, { okLabel: 'Close tab', danger: true }))) return;
+  if (t.kind === 'terminal' && t.view.paneCount > 1 && getPrefs().confirmCloseTerminals && !(await confirmBox('Close tab?', `This tab has ${t.view.paneCount} terminals. Close all of them?`, { okLabel: 'Close tab', danger: true }))) return;
   const order = [...tabs.keys()];
   const idx = order.indexOf(id);
   t.view.dispose?.();
@@ -268,8 +315,16 @@ strip.addEventListener('click', (e) => {
   const tab = e.target.closest('.tab');
   if (!tab) return;
   if (e.target.closest('.tab-x')) closeTab(tab.dataset.id);
-  else activate(tab.dataset.id);
+  else if (tab.dataset.id !== activeId) withTransition(() => activate(tab.dataset.id), 'tab-switch');
 });
+
+// Smooth state changes where the browser supports View Transitions.
+function withTransition(update, type) {
+  if (!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches) return update();
+  document.documentElement.dataset.vt = type || '';
+  const vt = document.startViewTransition(update);
+  vt.finished.finally(() => delete document.documentElement.dataset.vt);
+}
 strip.addEventListener('auxclick', (e) => {
   const tab = e.target.closest('.tab');
   if (e.button === 1 && tab && tabs.get(tab.dataset.id)?.closable) closeTab(tab.dataset.id);
@@ -341,6 +396,8 @@ async function openTerminal(cwd = null, command = null, title = null) {
     // last pane exited: close the tab without asking
     onEmpty: () => closeTabNow(id),
     onNewTab: () => openTerminal(),
+    // dot on the tab when a background terminal prints something
+    onActivity: () => activeId !== id && tabs.get(id)?.tabEl.classList.add('activity'),
   });
   addTab({ id, title: title || `${info.username}@${info.host}`, iconName: 'terminal', view });
 }
@@ -390,6 +447,14 @@ function openSystem() {
   if (tabs.has('system')) return activate('system');
   addTab({ id: 'system', title: 'System', iconName: 'activity', view: createSystem(session) });
 }
+let networkView = null;
+function openNetwork(section) {
+  if (!tabs.has('network')) {
+    networkView = createNetwork(session, info, actions);
+    addTab({ id: 'network', title: 'Network', iconName: 'broadcast', view: networkView });
+  } else activate('network');
+  if (section) networkView.open(section);
+}
 
 const actions = {
   openTerminal: (cwd, command, title) => openTerminal(cwd, command, title),
@@ -408,14 +473,159 @@ const filesCwd = () => (activeId === 'files' ? filesView?.cwd : null);
 document.addEventListener('click', (e) => {
   const open = e.target.closest('[data-open]')?.dataset.open;
   if (open && !workspace.hidden) {
-    ({ files: openFiles, terminal: () => openTerminal(filesCwd()), desktop: openDesktop, apps: openApps, system: openSystem })[open]?.();
+    ({ files: openFiles, terminal: () => openTerminal(filesCwd()), desktop: openDesktop, apps: openApps, system: openSystem, network: () => openNetwork() })[open]?.();
   }
   const action = e.target.closest('[data-action]')?.dataset.action;
   if (action === 'theme') toggleTheme();
   if (action === 'palette') showPalette();
   if (action === 'term-settings') loadTermMod().then((m) => m.openTerminalSettings());
+  if (action === 'settings') openSettings();
+  if (action === 'install') installApp();
   if (action === 'disconnect') disconnect();
 });
+
+// ------------------------------------------------------------- snippets ---
+// Saved commands, run in the focused terminal (honours broadcast).
+async function runSnippet(cmd) {
+  let term = activeTerm();
+  if (!term) {
+    await openTerminal(filesCwd(), cmd.command);
+    return;
+  }
+  term.typeIntoFocused(cmd.command + '\r');
+}
+
+async function manageSnippets() {
+  const list = getPrefs().snippets.slice();
+  const body = h(`<div class="snip-editor">
+    <p class="muted small">Snippets appear in the command palette (Ctrl+K) and run in the focused terminal.</p>
+    <div class="snip-rows"></div>
+    <button type="button" class="btn btn-sm" data-add>${icon('plus')} Add snippet</button>
+  </div>`);
+  const rows = $('.snip-rows', body);
+  const row = (s = { name: '', command: '' }) => {
+    const r = h(`<div class="snip-row"><input placeholder="Name" value="${esc(s.name)}" aria-label="Snippet name"><input class="mono" placeholder="Command" value="${esc(s.command)}" aria-label="Command" spellcheck="false"><button type="button" class="icon-btn sm" aria-label="Remove">${icon('x')}</button></div>`);
+    $('button', r).addEventListener('click', () => r.remove());
+    rows.append(r);
+    return r;
+  };
+  list.forEach((s) => row(s));
+  $('[data-add]', body).addEventListener('click', () => $('input', row()).focus());
+  const r = await modal({ title: 'Snippets', wide: true, body, buttons: [{ label: 'Cancel', value: false }, { label: 'Save', value: true, primary: true }] });
+  if (r.value !== true) return;
+  const snippets = $$('.snip-row', body)
+    .map((x) => ({ name: x.children[0].value.trim(), command: x.children[1].value }))
+    .filter((s) => s.command.trim())
+    .map((s) => ({ ...s, name: s.name || s.command.slice(0, 40) }));
+  setPrefs({ snippets });
+  toast(`${snippets.length} snippet${snippets.length === 1 ? '' : 's'} saved`, 'success');
+}
+
+// ------------------------------------------------------- preferences ---
+async function openSettings() {
+  const p = getPrefs();
+  const body = h(`<div class="settings">
+    <section><h3>Appearance</h3>
+      <div class="segmented" role="radiogroup" aria-label="Theme">
+        ${['system', 'light', 'dark', 'glass'].map((t) => `<label><input type="radio" name="theme" value="${t}" ${(document.documentElement.dataset.theme || 'system') === t ? 'checked' : ''}><span>${t === 'system' ? 'System' : THEME_NAMES[t]}</span></label>`).join('')}
+      </div>
+      <button type="button" class="btn btn-sm" data-act="term">${icon('terminal')} Terminal theme &amp; font…</button>
+    </section>
+    <section><h3>Network</h3>
+      <label class="switch"><input type="checkbox" name="dataSaver" ${p.dataSaver ? 'checked' : ''}><span></span><div><b>Data saver</b><small>Compresses SSH traffic (from the next connection), lowers remote-desktop quality and polls less often. Best on Wi-Fi, VPN or mobile links.</small></div></label>
+    </section>
+    <section><h3>Behaviour</h3>
+      <label class="switch"><input type="checkbox" name="confirmCloseTerminals" ${p.confirmCloseTerminals ? 'checked' : ''}><span></span><div><b>Confirm before closing split terminals</b></div></label>
+      <label class="switch"><input type="checkbox" name="notifyBell" ${p.notifyBell ? 'checked' : ''}><span></span><div><b>Notify on terminal bell</b><small>Shows a desktop notification when a hidden terminal rings (e.g. <code>make; printf '\\a'</code>).</small></div></label>
+      <button type="button" class="btn btn-sm" data-act="snippets">${icon('code')} Manage snippets…</button>
+    </section>
+    <section><h3>App</h3>
+      <div class="row-actions">
+        <button type="button" class="btn btn-sm" data-act="install" ${installEvent ? '' : 'hidden'}>${icon('download')} Install SSH Portal</button>
+        <button type="button" class="btn btn-sm" data-act="shortcuts">${icon('keyboard')} Keyboard shortcuts</button>
+        <button type="button" class="btn btn-sm btn-danger" data-act="reset">${icon('trash')} Reset all local data</button>
+      </div>
+      <p class="muted small">${matchMedia('(display-mode: standalone), (display-mode: window-controls-overlay)').matches ? 'Running as an installed app.' : 'Install it from your browser for its own window, Dock/taskbar icon and offline start.'}</p>
+    </section>
+  </div>`);
+  body.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'term') loadTermMod().then((m) => m.openTerminalSettings());
+    if (act === 'snippets') manageSnippets();
+    if (act === 'install') installApp();
+    if (act === 'shortcuts') showShortcuts();
+    if (act === 'reset' && (await confirmBox('Reset SSH Portal?', 'This forgets saved machines, bookmarks, snippets, preferences and the bridge pairing in this browser.', { okLabel: 'Reset', danger: true }))) {
+      for (const k of Object.keys(localStorage)) if (k.startsWith('sshportal.')) localStorage.removeItem(k);
+      location.reload();
+    }
+  });
+  body.addEventListener('change', async (e) => {
+    const t = e.target;
+    if (t.name === 'theme') setTheme(t.value);
+    if (t.name === 'dataSaver') setPrefs({ dataSaver: t.checked });
+    if (t.name === 'confirmCloseTerminals') setPrefs({ confirmCloseTerminals: t.checked });
+    if (t.name === 'notifyBell') {
+      if (t.checked && 'Notification' in window && Notification.permission !== 'granted') t.checked = (await Notification.requestPermission()) === 'granted';
+      setPrefs({ notifyBell: t.checked });
+    }
+  });
+  await modal({ title: 'Preferences', wide: true, body, buttons: [{ label: 'Done', value: true, primary: true }] });
+}
+
+const SHORTCUTS = [
+  ['General', [['Ctrl+K · Ctrl+Shift+P', 'Command palette (Ctrl+Shift+P inside a terminal)'], ['?', 'This list'], ['Ctrl+PageUp / PageDown', 'Previous / next tab'], ['Alt+1…9', 'Go to tab'], ['Alt+Shift+T', 'New terminal tab'], ['Alt+Shift+W', 'Close tab / pane']]],
+  ['Terminal', [['Ctrl+Shift+E', 'Split right'], ['Ctrl+Shift+O', 'Split down'], ['Ctrl+Shift+X', 'Maximize pane'], ['Alt+Arrows', 'Move between panes'], ['Ctrl+Shift+Arrows', 'Resize pane'], ['Alt+G / Alt+A / Alt+O', 'Broadcast: tab / all / off'], ['Ctrl+Shift+C / V', 'Copy / paste'], ['Ctrl+Shift+F', 'Find'], ['Ctrl + = / − / 0', 'Font size'], ['Drop files', 'Upload and paste the path']]],
+  ['Files', [['Enter / Backspace', 'Open / up'], ['Space', 'Quick look'], ['F2 · Del', 'Rename · delete'], ['Ctrl+C / X / V', 'Copy / cut / paste'], ['Ctrl+H', 'Hidden files'], ['Alt+← / →', 'Back / forward']]],
+];
+function showShortcuts() {
+  modal({
+    title: 'Keyboard shortcuts',
+    wide: true,
+    body: `<div class="shortcuts">${SHORTCUTS.map(([g, rows]) => `<section><h3>${g}</h3><dl>${rows.map(([k, d]) => `<dt>${k.split(/\s+(\/|·)\s+/).map((x) => (x === '/' || x === '·' ? ` ${x} ` : `<kbd>${esc(x)}</kbd>`)).join('')}</dt><dd>${esc(d)}</dd>`).join('')}</dl></section>`).join('')}</div>`,
+    buttons: [{ label: 'Close', value: true, primary: true }],
+  });
+}
+
+// ---------------------------------------------------------------- PWA ---
+let installEvent = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installEvent = e;
+  for (const b of $$('[data-action="install"]')) b.hidden = false;
+});
+window.addEventListener('appinstalled', () => {
+  installEvent = null;
+  for (const b of $$('[data-action="install"]')) b.hidden = true;
+  toast('SSH Portal is installed. Find it with your other apps.', 'success');
+});
+async function installApp() {
+  if (!installEvent) return toast('Use your browser menu → Install SSH Portal (or Add to Home Screen).');
+  installEvent.prompt();
+  await installEvent.userChoice;
+  installEvent = null;
+}
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    const offer = (w) => {
+      const t = toast('A new version of SSH Portal is ready.', 'info', 15000);
+      const b = h(`<button class="btn btn-sm">Update</button>`);
+      b.addEventListener('click', () => w.postMessage('skip-waiting'));
+      t.append(b);
+    };
+    if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing;
+      w?.addEventListener('statechange', () => w.state === 'installed' && navigator.serviceWorker.controller && offer(w));
+    });
+  }).catch(() => {});
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloaded || session) return; // never yank an active session
+    reloaded = true;
+    location.reload();
+  });
+}
 
 // ------------------------------------------------------------- palette ---
 function commands() {
@@ -434,9 +644,25 @@ function commands() {
     { group: 'Go to', title: 'Remote desktop', icon: 'monitor', run: openDesktop },
     { group: 'Go to', title: 'Applications', icon: 'grid', run: openApps },
     { group: 'Go to', title: 'System monitor', icon: 'activity', run: openSystem },
+    { group: 'Network', title: 'Network overview', icon: 'server', run: () => openNetwork('overview') },
+    { group: 'Network', title: 'Live bandwidth', icon: 'activity', run: () => openNetwork('bandwidth') },
+    { group: 'Network', title: 'Ping / traceroute / DNS / HTTP check', icon: 'zap', run: () => openNetwork('tools') },
+    { group: 'Network', title: 'Port check', icon: 'shield', run: () => openNetwork('ports') },
+    { group: 'Network', title: 'Scan LAN for devices', icon: 'search', run: () => openNetwork('lan') },
+    { group: 'Network', title: 'Port forwarding / SOCKS proxy', icon: 'link', run: () => openNetwork('forward') },
+    { group: 'Network', title: 'Speed test', icon: 'download', run: () => openNetwork('speed') },
+    { group: 'Network', title: 'Wake-on-LAN', icon: 'power', run: () => openNetwork('wol') },
+    ...getPrefs().snippets.map((s) => ({ group: 'Snippets', title: `Run: ${s.name}`, icon: 'play', run: () => runSnippet(s) })),
+    { group: 'Snippets', title: 'Manage snippets…', icon: 'code', run: manageSnippets },
     { group: 'Go to', title: 'Folder…', icon: 'folder', run: async () => { const p = await promptBox('Go to folder', 'Path on the remote', filesView?.cwd || info.home); if (p) { openFiles(); filesView.navigate(p.replace(/^~(?=\/|$)/, info.home)); } } },
     ...[...tabs.values()].map((t) => ({ group: 'Open tabs', title: `Switch to: ${t.title}`, icon: t.iconName, run: () => activate(t.id) })),
-    { group: 'Session', title: 'Toggle light / dark theme', icon: currentTheme() === 'dark' ? 'sun' : 'moon', run: toggleTheme },
+    ...Object.entries(THEME_NAMES).map(([k, n]) => ({ group: 'Theme', title: `Theme: ${n}${currentTheme() === k ? '  ✓' : ''}`, icon: THEME_ICON[k], run: () => setTheme(k) })),
+    { group: 'Theme', title: 'Theme: follow system', icon: 'monitor', run: () => setTheme('system') },
+    { group: 'Session', title: `${getPrefs().dataSaver ? 'Turn off' : 'Turn on'} data saver`, icon: 'zap', run: () => setPrefs({ dataSaver: !getPrefs().dataSaver }) },
+    { group: 'Session', title: 'Preferences…', icon: 'settings', run: openSettings },
+    { group: 'Session', title: 'Keyboard shortcuts', icon: 'keyboard', hint: '?', run: showShortcuts },
+    { group: 'Session', title: 'Install SSH Portal as an app', icon: 'download', when: () => !!installEvent, run: installApp },
+    { group: 'Session', title: 'Open another machine in a new window', icon: 'window', run: () => window.open(location.pathname, '_blank') },
     { group: 'Session', title: 'Disconnect', icon: 'logout', run: disconnect },
   ];
   return cmds;
@@ -472,6 +698,50 @@ async function pollLatency() {
   }
 }
 
+// Bytes actually sent over SSH (after compression): rate + totals.
+let trafficTimer = null;
+let lastTraffic = null;
+async function pollTraffic() {
+  clearTimeout(trafficTimer);
+  if (!session) return;
+  try {
+    const t = await session.req('traffic');
+    const now = performance.now();
+    const el = $('#st-traffic');
+    if (lastTraffic) {
+      const dt = (now - lastTraffic.at) / 1000;
+      const down = Math.max(0, (t.rx - lastTraffic.rx) / dt);
+      const up = Math.max(0, (t.tx - lastTraffic.tx) / dt);
+      el.innerHTML = `<span class="tr-down">↓ ${formatRate(down)}</span><span class="tr-up">↑ ${formatRate(up)}</span>${t.compress ? `<span class="tr-z" title="SSH compression on">${icon('zap')}</span>` : ''}`;
+      el.title = `This session: ↓ ${formatBytes(t.rx)} · ↑ ${formatBytes(t.tx)} over ${t.connections} SSH connection${t.connections === 1 ? '' : 's'}${t.compress ? ' (compressed)' : ''}\nClick for data saver`;
+    }
+    lastTraffic = { ...t, at: now };
+  } catch {}
+  trafficTimer = setTimeout(pollTraffic, interval(2000));
+}
+const formatRate = (bps) => (bps < 1024 ? `${Math.round(bps)} B/s` : `${formatBytes(bps)}/s`);
+$('#st-traffic').addEventListener('click', (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  const t = lastTraffic;
+  contextMenu(r.left, r.top - 150, [
+    { label: t ? `Session total: ↓ ${formatBytes(t.rx)}  ↑ ${formatBytes(t.tx)}` : 'Measuring…', icon: 'activity', disabled: true, action: () => {} },
+    { label: getPrefs().dataSaver ? 'Turn off data saver' : 'Turn on data saver', icon: 'zap', action: () => setPrefs({ dataSaver: !getPrefs().dataSaver }) },
+    { label: 'Live bandwidth of the remote…', icon: 'broadcast', action: () => openNetwork('bandwidth') },
+  ]);
+});
+onPrefs((p, patch) => {
+  if ('dataSaver' in patch) {
+    syncDataSaver();
+    if (session) toast(p.dataSaver ? 'Data saver on. SSH compression starts with your next connection; polling and remote desktop quality drop now.' : 'Data saver off.', 'info', 6000);
+  }
+});
+function syncDataSaver() {
+  $('#st-saver').hidden = !getPrefs().dataSaver;
+  form.dataSaver.checked = getPrefs().dataSaver;
+  document.documentElement.classList.toggle('data-saver', getPrefs().dataSaver);
+}
+$('#st-saver').addEventListener('click', () => setPrefs({ dataSaver: false }));
+
 async function pollX11() {
   if (!session || !info.x11) {
     $('#st-x11').innerHTML = `${icon('window')}<span>X11 off</span>`;
@@ -484,29 +754,77 @@ async function pollX11() {
 }
 
 // ------------------------------------------------------------ lifecycle ---
-function enterWorkspace() {
-  connectView.hidden = true;
-  workspace.hidden = false;
+// restore: { cwd, terminals, active } after a reconnect
+function enterWorkspace(restore = null) {
+  withTransition(() => {
+    connectView.hidden = true;
+    workspace.hidden = false;
+  }, 'enter');
   $('#session-chip .chip-text').textContent = `${info.username}@${info.host}`;
   $('#session-chip').title = info.uname || '';
   $('#st-conn').innerHTML = `<span class="dot" data-kind="ok"></span><span>${esc(info.uname || info.host)}</span>`;
   document.title = `${info.username}@${info.host} · SSH Portal`;
   openFiles();
+  if (restore?.cwd) filesView.navigate(restore.cwd);
+  for (let i = 0; i < (restore?.terminals || 0); i++) openTerminal();
+  const open = restore?.open || pendingOpen;
+  pendingOpen = null;
+  if (open === 'terminal' && !restore?.terminals) openTerminal();
+  if (open === 'network') openNetwork();
+  if (open === 'desktop') openDesktop();
+  if (open === 'apps') openApps();
+  if (open === 'system') openSystem();
+  if (open === 'files') openFiles();
   session.addEventListener('closed', onSessionLost);
+  lastTraffic = null;
   pollLatency();
   pollX11();
-  latencyTimer = setInterval(pollLatency, 10000);
+  pollTraffic();
+  latencyTimer = setInterval(pollLatency, interval(10000));
   loadTermMod().then((m) => m.onTerminalStateChange(updateStatus));
 }
 
-function onSessionLost() {
+// The SSH link dropped (Wi-Fi blip, remote rebooted…): offer to reconnect and
+// restore the workspace layout.
+async function onSessionLost() {
   if (!session) return;
-  toast('The SSH connection was closed', 'error', 7000);
+  const snapshot = {
+    cwd: filesView?.cwd,
+    terminals: [...tabs.values()].filter((t) => t.kind === 'terminal').length,
+    open: tabs.get(activeId)?.kind,
+  };
+  const args = lastArgs;
   leaveWorkspace();
+  if (!args) return toast('The SSH connection was closed', 'error', 7000);
+  const r = await modal({
+    title: 'Connection lost',
+    body: `<p>The connection to <b>${esc(args.username)}@${esc(args.host)}</b> was closed.</p><p class="muted small">Reconnecting reopens your folder and ${snapshot.terminals} terminal tab(s). Programs that were running in them have stopped.</p>`,
+    buttons: [
+      { label: 'Close', value: false },
+      { label: 'Reconnect', value: true, primary: true },
+    ],
+  });
+  if (r.value !== true) return;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const t = toast(`Reconnecting to ${args.host}… (attempt ${attempt})`, 'info', 30000);
+    try {
+      await openSession(args);
+      t.remove();
+      enterWorkspace(snapshot);
+      toast('Reconnected', 'success');
+      return;
+    } catch (e) {
+      t.remove();
+      if (attempt === 3) toast(`Couldn't reconnect: ${e.message}`, 'error', 8000);
+      else await new Promise((res) => setTimeout(res, 2000 * attempt));
+    }
+  }
 }
 
 function leaveWorkspace() {
   clearInterval(latencyTimer);
+  clearTimeout(trafficTimer);
+  networkView = null;
   termMod?.setBroadcast('off');
   for (const t of tabs.values()) {
     t.view.dispose?.();
@@ -520,8 +838,10 @@ function leaveWorkspace() {
   const s = session;
   session = null;
   s?.close();
-  workspace.hidden = true;
-  connectView.hidden = false;
+  withTransition(() => {
+    workspace.hidden = true;
+    connectView.hidden = false;
+  }, 'leave');
   document.title = 'SSH Portal';
   renderProfiles();
   checkBridge();
@@ -531,14 +851,19 @@ async function disconnect() {
   const dirty = [...tabs.values()].some((t) => t.title.startsWith('●'));
   const terms = [...tabs.values()].filter((t) => t.kind === 'terminal').length;
   if ((dirty || terms) && !(await confirmBox('Disconnect?', dirty ? 'Some files have unsaved changes. They will be lost.' : `${terms} terminal tab(s) will be closed.`, { okLabel: 'Disconnect', danger: dirty }))) return;
+  lastArgs = null; // deliberate: don't offer to reconnect
   leaveWorkspace();
 }
 
 // ------------------------------------------------------------ shortcuts ---
+const typing = (el) => el?.closest?.('input, textarea, select, [contenteditable], .xterm, .dt-screen');
 document.addEventListener('keydown', (e) => {
   if (workspace.hidden) return;
   const k = e.key.toLowerCase();
-  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && k === 'k') {
+  if (e.key === '?' && !e.ctrlKey && !e.altKey && !e.metaKey && !typing(e.target) && !document.querySelector('dialog[open]')) {
+    e.preventDefault();
+    showShortcuts();
+  } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && k === 'k') {
     e.preventDefault();
     showPalette();
   } else if (e.ctrlKey && e.shiftKey && k === 'p') {
@@ -568,9 +893,45 @@ window.addEventListener('beforeunload', (e) => {
   if (session) e.preventDefault();
 });
 
+// ------------------------------------------------------------ deep links ---
+// ?connect=user@host[:port] (also web+ssh://user@host:port from the installed
+// app's link handler) and ?open=terminal|files|network (app shortcuts).
+let pendingOpen = null;
+{
+  const params = new URLSearchParams(location.search);
+  pendingOpen = params.get('open');
+  const target = params.get('connect');
+  if (target) {
+    const m = decodeURIComponent(target)
+      .replace(/^(web\+ssh|ssh):\/\//i, '')
+      .replace(/\/.*$/, '')
+      .match(/^(?:([^@]+)@)?(\[[^\]]+\]|[^:@]+)(?::(\d+))?$/);
+    if (m) {
+      const [, user = '', host, port = '22'] = m;
+      const hostname = host.replace(/^\[|\]$/g, '');
+      const saved = profiles().find((p) => p.host === hostname && (!user || p.username === user) && +p.port === +port);
+      form.host.value = hostname;
+      form.port.value = port;
+      form.username.value = user || saved?.username || '';
+      if (saved) {
+        form.auth.value = saved.auth || 'password';
+        form.keyPath.value = saved.keyPath || '';
+        form.x11.checked = saved.x11 !== false;
+      }
+      queueMicrotask(() => {
+        syncForm();
+        if (saved && saved.auth !== 'password') form.requestSubmit();
+        else (form.username.value ? form.password : form.username).focus();
+      });
+    }
+  }
+  if (target || pendingOpen) history.replaceState(null, '', location.pathname);
+}
+
 // ------------------------------------------------------------------ boot ---
 $('#hosted-origin').textContent = location.origin;
 renderProfiles();
 syncForm();
+syncDataSaver();
 checkBridge();
 if (location.protocol === 'https:' && /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent)) $('#safari-note').hidden = false;

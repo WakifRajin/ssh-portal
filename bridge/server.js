@@ -17,12 +17,14 @@ import { pipeline } from 'node:stream/promises';
 import ssh2 from 'ssh2';
 import { WebSocketServer } from 'ws';
 import { X11Forwarder } from './x11.js';
-import { DESKTOP_START, DESKTOP_STOP, SYSINFO } from './remote-scripts.js';
+import net from 'node:net';
+import { DESKTOP_START, DESKTOP_STOP, SYSINFO, NET_SCAN, NET_INFO } from './remote-scripts.js';
+import { toolCommand, checkPorts, COMMON_PORTS, startForward, wakeOnLan } from './net.js';
 import { isSea } from 'node:sea';
 import { installSelf, setAutostart, autostartEnabled, registerProtocol, uninstall, spawnDetached, openUrl } from './install.js';
 
 const { Client, utils: sshUtils } = ssh2;
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 // Baked in by build.mjs for the downloadable executables.
 const BUILD_APP_URL = process.env.SSH_PORTAL_BUILD_APP_URL || '';
 const BUILD_REPO = process.env.SSH_PORTAL_BUILD_REPO || '';
@@ -196,6 +198,11 @@ class Session {
     this.x11 = new X11Forwarder();
     this.pool = [];
     this.pendingConn = null;
+    this.forwards = new Map();
+    this.streams = new Map();
+    // bytes on the wire to the SSH server (after compression), all connections
+    this.traffic = { rx: 0, tx: 0, sockets: new Set() };
+    this.compress = false;
     ws.on('message', (raw) => this.onMessage(raw));
     ws.on('close', () => this.dispose());
   }
@@ -265,6 +272,10 @@ class Session {
     for (const resolve of this.waiting.values()) resolve(null);
     this.waiting.clear();
     for (const [k, t] of tickets) if (t.session === this) tickets.delete(k);
+    for (const f of this.forwards.values()) f.close();
+    this.forwards.clear();
+    for (const ch of this.streams.values()) ch.close();
+    this.streams.clear();
     for (const p of this.pool) p.conn.end();
     this.pool = [];
     this.conn?.end();
@@ -281,6 +292,8 @@ class Session {
       case 'connect': return this.connect(a);
       case 'disconnect': this.conn?.end(); return true;
       case 'x11.status': return this.x11.probe();
+      case 'wol': return wakeOnLan(a.mac, a.broadcast || undefined);
+      case 'traffic': return this.trafficStats();
       case 'ping': return true;
     }
     this.needConn();
@@ -308,6 +321,21 @@ class Session {
       case 'desktop.stop': return this.runScript(DESKTOP_STOP, [a.mode, String(Number(a.display) || 0)]);
       case 'sysinfo': return this.sysinfo();
       case 'kill': return this.run(`kill -${Number(a.signal) || 15} ${Number(a.pid)}`, { check: true });
+      case 'stream.start': return this.startStream(a);
+      case 'stream.stop': return this.stopStream(a.sid);
+      case 'net.ports': return checkPorts(this.conn, a.host, a.ports?.length ? a.ports : COMMON_PORTS, { timeout: Number(a.timeout) || 2500 });
+      case 'net.scan': return this.lanScan();
+      case 'net.info': return this.netInfo();
+      case 'net.bw': return this.run('cat /proc/net/dev', { timeout: 5000 }).then((r) => ({ t: Date.now(), raw: r.stdout }));
+      case 'net.speed': return this.speedTest(a);
+      case 'net.publicip': return this.run('curl -s --max-time 5 https://api.ipify.org || wget -qO- -T 5 https://api.ipify.org', { timeout: 8000 }).then((r) => r.stdout.trim());
+      case 'fwd.list': return this.listForwards();
+      case 'fwd.add': return this.addForward(a);
+      case 'fwd.remove': {
+        this.forwards.get(a.id)?.close();
+        this.forwards.delete(a.id);
+        return this.listForwards();
+      }
       default: throw new Error(`Unknown op ${op}`);
     }
   }
@@ -413,12 +441,14 @@ class Session {
       });
     };
 
+    this.compress = !!a.compress;
+    const sock = await this.dial(host, port);
     const conn = new Client();
     conn.once('close', () => (connGone = true));
     await new Promise((resolve, reject) => {
       conn.once('ready', resolve);
       conn.once('error', reject);
-      conn.connect({ host, port, username, authHandler, hostVerifier, tryKeyboard: true, readyTimeout: 180_000, keepaliveInterval: 15_000 });
+      conn.connect({ sock, host, port, username, authHandler, hostVerifier, tryKeyboard: true, readyTimeout: 180_000, keepaliveInterval: 15_000, ...this.sshAlgorithms() });
     }).catch((e) => {
       conn.end();
       const level = e.level === 'client-authentication' ? 'Authentication failed (all methods rejected)' : e.message;
@@ -443,6 +473,150 @@ class Session {
     const [uname = '', user = username] = who.stdout.trim().split('\n');
     this.info = { host, port, username: user.trim() || username, home, uname: uname.trim() };
     return this.info;
+  }
+
+  // TCP connection to the SSH server whose bytes we can count (traffic meter).
+  dial(host, port) {
+    return new Promise((resolve, reject) => {
+      const sock = net.connect({ host, port });
+      const timer = setTimeout(() => {
+        sock.destroy();
+        reject(new Error(`Timed out connecting to ${host}:${port}`));
+      }, 15_000);
+      sock.once('connect', () => {
+        clearTimeout(timer);
+        sock.setNoDelay(true);
+        this.traffic.sockets.add(sock);
+        sock.once('close', () => {
+          this.traffic.rx += sock.bytesRead;
+          this.traffic.tx += sock.bytesWritten;
+          this.traffic.sockets.delete(sock);
+        });
+        resolve(sock);
+      });
+      sock.once('error', (e) => {
+        clearTimeout(timer);
+        reject(new Error(e.code === 'ECONNREFUSED' ? `Nothing is accepting SSH connections at ${host}:${port}` : e.code === 'ENOTFOUND' ? `Unknown host ${host}` : e.code === 'EHOSTUNREACH' ? `${host} is unreachable` : e.message));
+      });
+    });
+  }
+
+  // Data-saver mode: zlib compression on the SSH transport.
+  sshAlgorithms() {
+    return this.compress ? { algorithms: { compress: ['zlib@openssh.com', 'zlib', 'none'] } } : {};
+  }
+
+  trafficStats() {
+    let rx = this.traffic.rx;
+    let tx = this.traffic.tx;
+    for (const s of this.traffic.sockets) {
+      rx += s.bytesRead;
+      tx += s.bytesWritten;
+    }
+    return { rx, tx, connections: this.traffic.sockets.size, compress: this.compress };
+  }
+
+  // ------------------------------------------------------------ streaming ---
+  // Long-running diagnostics (ping, traceroute…) stream their output.
+  async startStream(a) {
+    const command = toolCommand(a.tool, a.target, a);
+    const ch = await this.openChannel((conn, cb) => conn.exec(command, cb));
+    const sid = crypto.randomUUID();
+    const dec = new StringDecoder('utf8');
+    this.streams.set(sid, ch);
+    const emit = (d) => this.send({ t: 'stream-data', sid, data: dec.write(d) });
+    ch.on('data', emit);
+    ch.stderr.on('data', emit);
+    ch.on('exit', (code) => (ch.exitCode = code));
+    ch.on('close', () => {
+      this.streams.delete(sid);
+      this.send({ t: 'stream-exit', sid, code: ch.exitCode ?? null });
+    });
+    return { sid, command };
+  }
+
+  stopStream(sid) {
+    const ch = this.streams.get(sid);
+    if (!ch) return false;
+    try {
+      ch.signal('INT');
+    } catch {}
+    setTimeout(() => ch.close(), 300);
+    return true;
+  }
+
+  // ----------------------------------------------------------- net tools ---
+  async lanScan() {
+    const res = await this.runScript(NET_SCAN, [], { timeout: 60_000 });
+    const out = { ifaces: [], self: null, hosts: [] };
+    for (const line of res.stdout.split('\n')) {
+      const p = line.trim().split(/\s+/);
+      if (p[0] === 'IFACE') out.ifaces.push({ name: p[1], addr: p[2] });
+      else if (p[0] === 'SELF') out.self = p[1];
+      else if (p[0] === 'HOST' && p[1]) out.hosts.push({ ip: p[1], mac: p[2] === '-' || p[2] === 'self' ? null : p[2], name: p[3] === '-' ? null : p[3], self: p[2] === 'self' });
+    }
+    if (!out.self) throw new Error((res.stdout.match(/ERROR: .*/) || [res.stderr || 'LAN scan failed'])[0].replace(/^ERROR: /, ''));
+    const seen = new Map();
+    for (const h of out.hosts) seen.set(h.ip, { ...seen.get(h.ip), ...h });
+    out.hosts = [...seen.values()].sort((x, y) => Number(x.ip.split('.').pop()) - Number(y.ip.split('.').pop()));
+    return out;
+  }
+
+  async netInfo() {
+    const res = await this.run(`sh -s`, { stdin: NET_INFO, timeout: 15_000 });
+    const sections = {};
+    let cur = null;
+    for (const line of res.stdout.split('\n')) {
+      const m = line.match(/^--([A-Z]+)--$/);
+      if (m) sections[(cur = m[1].toLowerCase())] = [];
+      else if (cur && line.trim()) sections[cur].push(line);
+    }
+    return sections;
+  }
+
+  // Throughput of this computer <-> remote over SSH (incompressible data, so
+  // compression doesn't inflate the result).
+  async speedTest({ direction = 'down', mb = 16 }) {
+    const bytes = Math.min(Math.max(Number(mb) || 16, 1), 256) * 1048576;
+    const t0 = performance.now();
+    let got = 0;
+    await new Promise((resolve, reject) => {
+      const cmd = direction === 'up' ? 'cat > /dev/null' : `head -c ${bytes} /dev/urandom`;
+      this.conn.exec(cmd, (err, ch) => {
+        if (err) return reject(err);
+        ch.on('data', (d) => (got += d.length));
+        ch.stderr.resume();
+        ch.on('close', resolve);
+        if (direction === 'up') {
+          const chunk = crypto.randomBytes(256 * 1024);
+          let sent = 0;
+          const pump = () => {
+            while (sent < bytes) {
+              const n = Math.min(chunk.length, bytes - sent);
+              sent += n;
+              if (!ch.write(n === chunk.length ? chunk : chunk.subarray(0, n))) return ch.once('drain', pump);
+            }
+            ch.end();
+          };
+          pump();
+        }
+      });
+    });
+    const ms = performance.now() - t0;
+    const moved = direction === 'up' ? bytes : got;
+    return { direction, bytes: moved, ms: Math.round(ms), mbps: +((moved * 8) / (ms / 1000) / 1e6).toFixed(1) };
+  }
+
+  // ---------------------------------------------------------- forwarding ---
+  listForwards() {
+    return [...this.forwards.values()].map(({ id, type, localPort, remoteHost, remotePort, connections, total, bytes }) => ({ id, type, localPort, remoteHost, remotePort, connections, total, bytes }));
+  }
+
+  async addForward(a) {
+    const fwd = startForward(() => this.conn, { type: a.type === 'socks' ? 'socks' : 'local', localPort: a.localPort, remoteHost: a.remoteHost || 'localhost', remotePort: a.remotePort }, () => this.send({ t: 'event', kind: 'forwards' }));
+    await fwd.ready;
+    this.forwards.set(fwd.id, fwd);
+    return this.listForwards();
   }
 
   // ---------------------------------------------------------------- exec ---
@@ -575,11 +749,14 @@ class Session {
       m = { type: 'keyboard-interactive', username, prompt: (n, i, l, prompts, finish) => finish(replay.shift() || prompts.map(() => '')) };
     }
     let used = false;
+    const sock = await this.dial(host, port);
     const conn = new Client();
     await new Promise((resolve, reject) => {
       conn.once('ready', resolve);
       conn.once('error', reject);
       conn.connect({
+        ...this.sshAlgorithms(),
+        sock,
         host,
         port,
         username,
@@ -855,6 +1032,14 @@ async function handleHttp(req, res) {
     if (url.pathname === '/api/autostart' && req.method === 'POST') {
       const enabled = url.searchParams.get('enabled') === '1';
       return json(res, 200, { autostart: setAutostart(enabled, launcher()) && enabled });
+    }
+    if (url.pathname === '/api/wol' && req.method === 'POST') {
+      try {
+        await wakeOnLan(url.searchParams.get('mac'), url.searchParams.get('broadcast') || undefined);
+        return json(res, 200, { ok: true });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
     }
     if (url.pathname === '/api/quit' && req.method === 'POST') {
       json(res, 200, { ok: true });
