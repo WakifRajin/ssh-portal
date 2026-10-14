@@ -8,6 +8,7 @@ import { createSystem } from './system.js';
 import { openPalette } from './palette.js';
 import { createNetwork } from './network.js';
 import { getPrefs, setPrefs, onPrefs, interval } from './prefs.js';
+import { clearSudo } from './sudo.js';
 
 const LS = {
   get: (k, d) => {
@@ -27,6 +28,20 @@ function hydrateIcons(root = document) {
   }
 }
 hydrateIcons();
+
+// In a short window the rail scrolls (CSS), which would clip the hover tooltips,
+// so fall back to native tooltips there.
+{
+  const short = matchMedia('(max-height: 780px)');
+  const syncRailTips = () => {
+    for (const b of $$('#dock [data-tip]')) {
+      if (short.matches) b.title = b.dataset.tip;
+      else if (b.title === b.dataset.tip) b.removeAttribute('title');
+    }
+  };
+  short.addEventListener('change', syncRailTips);
+  syncRailTips();
+}
 
 // ------------------------------------------------------------------ theme ---
 // Themes: dark, light and "glass" (liquid glass); no explicit choice = system.
@@ -433,10 +448,13 @@ async function openDesktop() {
   addTab({ id: 'desktop', title: 'Desktop', iconName: 'monitor', view: createDesktop(session, info, appState) });
 }
 
-function openFiles() {
-  if (tabs.has('files')) return activate('files');
-  filesView = createFileExplorer(session, info, actions);
-  addTab({ id: 'files', title: 'Files', iconName: 'folder', view: filesView, closable: false });
+// path (optional): navigate the Files tab there
+function openFiles(path) {
+  if (!tabs.has('files')) {
+    filesView = createFileExplorer(session, info, actions);
+    addTab({ id: 'files', title: 'Files', iconName: 'folder', view: filesView, closable: false });
+  } else activate('files');
+  if (typeof path === 'string' && path) Promise.resolve(filesView.navigate(path)).then(updateStatus, () => {});
 }
 function openApps() {
   if (tabs.has('apps')) return activate('apps');
@@ -448,18 +466,73 @@ function openSystem() {
   addTab({ id: 'system', title: 'System', iconName: 'activity', view: createSystem(session) });
 }
 let networkView = null;
-function openNetwork(section) {
+// opts: { tool, target } runs a diagnostic; { ports: host } runs a port check
+function openNetwork(section, opts) {
   if (!tabs.has('network')) {
     networkView = createNetwork(session, info, actions);
     addTab({ id: 'network', title: 'Network', iconName: 'broadcast', view: networkView });
   } else activate('network');
-  if (section) networkView.open(section);
+  if (opts?.tool) networkView.runTool(opts.tool, opts.target);
+  else if (opts?.ports) networkView.checkPorts(opts.ports);
+  else if (section) networkView.open(section);
+}
+
+// Server panels are loaded on first use, so a problem in one can't stop the app starting.
+const loadingTabs = new Set();
+async function openLazy(id, title, iconName, load) {
+  if (tabs.has(id)) return activate(id);
+  if (loadingTabs.has(id)) return;
+  loadingTabs.add(id);
+  try {
+    const view = await load();
+    if (!view || !session) return;
+    if (tabs.has(id)) view.dispose?.();
+    else addTab({ id, title, iconName, view });
+  } catch (e) {
+    toast(`Couldn't open ${title}: ${e.message}`, 'error', 7000);
+  } finally {
+    loadingTabs.delete(id);
+  }
+}
+const openServices = () => openLazy('services', 'Services', 'sliders', async () => (await import('./services.js')).createServices(session, info, actions));
+const openDocker = () => openLazy('docker', 'Docker', 'box', async () => (await import('./docker.js')).createDocker(session, info, actions));
+let logsView = null;
+// src: { unit, scope } to start on a specific service
+async function openLogs(src) {
+  if (tabs.has('logs')) {
+    if (src) logsView.open(src); // before activating, so the tab starts only once
+    return activate('logs');
+  }
+  await openLazy('logs', 'Logs', 'scroll', async () => {
+    const m = await import('./logs.js');
+    if (!session) return null;
+    logsView = m.createLogs(session);
+    if (src) logsView.open(src);
+    return logsView;
+  });
+}
+let devicesView = null;
+async function openDevices(section) {
+  if (tabs.has('devices')) {
+    if (section) devicesView.open(section);
+    return activate('devices');
+  }
+  await openLazy('devices', 'Devices', 'usb', async () => {
+    const m = await import('./devices.js');
+    if (!session) return null;
+    devicesView = m.createDevices(session, info, actions);
+    if (section) devicesView.open(section);
+    return devicesView;
+  });
 }
 
 const actions = {
   openTerminal: (cwd, command, title) => openTerminal(cwd, command, title),
   openEditor,
   showDesktop: openDesktop,
+  openLogs: (src) => openLogs(src),
+  openFiles: (path) => openFiles(path),
+  openNetwork: (section, opts) => openNetwork(section, opts),
   openWithRemote: (path) => {
     if (!tabs.has('apps')) openApps();
     appsView.launch(`xdg-open '${path.replace(/'/g, `'\\''`)}'`, appState.desktopDisplay != null ? 'desktop' : 'x11', `xdg-open ${path.split('/').pop()}`);
@@ -473,7 +546,7 @@ const filesCwd = () => (activeId === 'files' ? filesView?.cwd : null);
 document.addEventListener('click', (e) => {
   const open = e.target.closest('[data-open]')?.dataset.open;
   if (open && !workspace.hidden) {
-    ({ files: openFiles, terminal: () => openTerminal(filesCwd()), desktop: openDesktop, apps: openApps, system: openSystem, network: () => openNetwork() })[open]?.();
+    ({ files: openFiles, terminal: () => openTerminal(filesCwd()), desktop: openDesktop, apps: openApps, system: openSystem, network: () => openNetwork(), services: openServices, logs: () => openLogs(), docker: openDocker, devices: () => openDevices() })[open]?.();
   }
   const action = e.target.closest('[data-action]')?.dataset.action;
   if (action === 'theme') toggleTheme();
@@ -620,8 +693,11 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
     });
   }).catch(() => {});
   let reloaded = false;
+  // Only reload for updates: the first install also fires controllerchange
+  // (clients.claim), and reloading then would drop a ?open= deep link.
+  const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloaded || session) return; // never yank an active session
+    if (reloaded || session || !hadController) return; // never yank an active session
     reloaded = true;
     location.reload();
   });
@@ -644,6 +720,14 @@ function commands() {
     { group: 'Go to', title: 'Remote desktop', icon: 'monitor', run: openDesktop },
     { group: 'Go to', title: 'Applications', icon: 'grid', run: openApps },
     { group: 'Go to', title: 'System monitor', icon: 'activity', run: openSystem },
+    { group: 'Server', title: 'Services (start, stop, restart)', icon: 'sliders', run: openServices },
+    { group: 'Server', title: 'Logs (system journal)', icon: 'scroll', run: () => openLogs() },
+    { group: 'Server', title: 'Docker containers', icon: 'box', run: openDocker },
+    { group: 'Server', title: 'Devices', icon: 'usb', run: () => openDevices() },
+    { group: 'Server', title: 'Devices: USB', icon: 'usb', run: () => openDevices('usb') },
+    { group: 'Server', title: 'Devices: Network & switch', icon: 'broadcast', run: () => openDevices('network') },
+    { group: 'Server', title: 'Devices: Nearby devices', icon: 'search', run: () => openDevices('nearby') },
+    { group: 'Server', title: 'Devices: Storage', icon: 'hdd', run: () => openDevices('storage') },
     { group: 'Network', title: 'Network overview', icon: 'server', run: () => openNetwork('overview') },
     { group: 'Network', title: 'Live bandwidth', icon: 'activity', run: () => openNetwork('bandwidth') },
     { group: 'Network', title: 'Ping / traceroute / DNS / HTTP check', icon: 'zap', run: () => openNetwork('tools') },
@@ -775,6 +859,10 @@ function enterWorkspace(restore = null) {
   if (open === 'apps') openApps();
   if (open === 'system') openSystem();
   if (open === 'files') openFiles();
+  if (open === 'services') openServices();
+  if (open === 'logs') openLogs();
+  if (open === 'docker') openDocker();
+  if (open === 'devices') openDevices();
   session.addEventListener('closed', onSessionLost);
   lastTraffic = null;
   pollLatency();
@@ -824,7 +912,9 @@ async function onSessionLost() {
 function leaveWorkspace() {
   clearInterval(latencyTimer);
   clearTimeout(trafficTimer);
-  networkView = null;
+  networkView = logsView = devicesView = null;
+  clearSudo();
+  loadingTabs.clear();
   termMod?.setBroadcast('off');
   for (const t of tabs.values()) {
     t.view.dispose?.();

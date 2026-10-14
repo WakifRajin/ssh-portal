@@ -153,6 +153,14 @@ export class BridgeSession extends EventTarget {
     return { sid, command, stop: () => this.req('stream.stop', { sid }).catch(() => {}) };
   }
 
+  // Generic stream (journal, docker logs, ...). args.kind picks the producer;
+  // onData gets raw text chunks (lines may be split across chunks).
+  async startStream(args, onData, onExit) {
+    const { sid } = await this.req('stream.start', args);
+    this.streamHandlers.set(sid, { data: onData, exit: onExit });
+    return { sid, stop: () => this.req('stream.stop', { sid }).catch(() => {}) };
+  }
+
   // ---------------------------------------------------------------- files ---
   async downloadUrl(path, inline = false) {
     const ticket = await this.req('ticket', { kind: 'download', path, inline });

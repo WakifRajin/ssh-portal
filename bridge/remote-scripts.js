@@ -132,3 +132,125 @@ echo "--DNS--"; grep -E '^(nameserver|search)' /etc/resolv.conf 2>/dev/null
 echo "--LISTEN--"; (ss -tulpnH 2>/dev/null || ss -tulnH 2>/dev/null || netstat -tuln 2>/dev/null | tail -n +3)
 echo "--CONN--"; (ss -tnpH state established 2>/dev/null || ss -tnH state established 2>/dev/null) | head -n 200
 `;
+
+// Usage: sh -s -- <docker|podman>
+// One exec for the whole Docker panel. Sections are marker lines; parsed by
+// parseDockerList() in admin.js. A failing `ps` becomes --ERROR-- plus its text.
+export const DOCKER_LIST = String.raw`
+R="$1"
+command -v "$R" >/dev/null 2>&1 || { echo '--NOTINSTALLED--'; exit 0; }
+OUT=$("$R" ps -a --format '{{json .}}' </dev/null 2>&1); RC=$?
+if [ "$RC" -ne 0 ]; then echo '--ERROR--'; echo "$OUT"; exit 0; fi
+echo '--PS--'; echo "$OUT"
+echo '--IMAGES--'; "$R" images --format '{{json .}}' </dev/null 2>/dev/null
+echo '--VOLUMES--'; "$R" volume ls --format '{{json .}}' </dev/null 2>/dev/null
+echo '--NETWORKS--'; "$R" network ls --format '{{json .}}' </dev/null 2>/dev/null
+echo '--STATS--'
+if [ -n "$("$R" ps -q </dev/null 2>/dev/null)" ]; then "$R" stats --no-stream --format '{{json .}}' </dev/null 2>/dev/null; fi
+`;
+
+// Usage: sh -s -- [usb]
+// Hardware inventory. Every command reads </dev/null because this script
+// itself arrives on stdin and a greedy tool would swallow the rest of it.
+// With "usb" only the (cheap) USB section is printed, for hot-plug polling.
+// Lines are tab separated: U (usb), I (iface), WIFI, N (neighbour name).
+export const DEVICES = String.raw`
+have() { command -v "$1" >/dev/null 2>&1; }
+rd() { R=""; [ -r "$1" ] && read -r R < "$1" 2>/dev/null; return 0; }
+
+echo '--TOOLS--'
+for t in lsusb lsblk lspci bluetoothctl lldpctl networkctl bridge iw nmcli; do
+  if have "$t"; then echo "$t=1"; else echo "$t=0"; fi
+done
+
+echo '--USB--'
+for d in /sys/bus/usb/devices/*; do
+  [ -f "$d/idVendor" ] || continue
+  rd "$d/busnum"; BUS=$R
+  rd "$d/devnum"; DEV=$R
+  rd "$d/idVendor"; VID=$R
+  rd "$d/idProduct"; PID=$R
+  rd "$d/manufacturer"; MAN=$R
+  rd "$d/product"; PRD=$R
+  rd "$d/speed"; SPD=$R
+  rd "$d/bDeviceClass"; DCL=$R
+  rd "$d/serial"; SER=$R
+  ICL=""
+  if [ "$DCL" = 00 ] || [ "$DCL" = ef ]; then
+    for f in "$d":*/bInterfaceClass; do
+      if [ -f "$f" ]; then rd "$f"; ICL=$R; break; fi
+    done
+  fi
+  printf 'U\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$BUS" "$DEV" "$VID" "$PID" "$MAN" "$PRD" "$SPD" "$DCL" "$ICL" "$SER"
+done
+echo '--LSUSB--'
+have lsusb && lsusb </dev/null 2>/dev/null
+[ "$1" = usb ] && exit 0
+
+echo '--LSBLK--'
+if have lsblk; then
+  lsblk -J -b -o NAME,PATH,SIZE,TYPE,MODEL,VENDOR,TRAN,MOUNTPOINTS,FSTYPE,LABEL,RM,FSUSED,FSAVAIL </dev/null 2>/dev/null ||
+  lsblk -J -b -o NAME,PATH,SIZE,TYPE,MODEL,VENDOR,TRAN,MOUNTPOINT,FSTYPE,LABEL,RM,FSUSED,FSAVAIL </dev/null 2>/dev/null ||
+  lsblk -J -b -o NAME,PATH,SIZE,TYPE,MODEL,VENDOR,TRAN,MOUNTPOINT,FSTYPE,LABEL,RM </dev/null 2>/dev/null
+fi
+
+echo '--PCI--'
+have lspci && lspci -mm </dev/null 2>/dev/null
+
+TO=""; have timeout && TO="timeout 4"
+echo '--BTSHOW--'
+have bluetoothctl && $TO bluetoothctl show </dev/null 2>/dev/null
+echo '--BTPAIRED--'
+have bluetoothctl && $TO bluetoothctl devices Paired </dev/null 2>/dev/null
+echo '--BTCONN--'
+have bluetoothctl && { $TO bluetoothctl devices Connected </dev/null 2>/dev/null || echo '!unsupported'; }
+
+echo '--IFACES--'
+ANYW=0
+for p in /sys/class/net/*; do
+  [ -e "$p" ] || continue
+  n=$(basename "$p")
+  rd "$p/address"; MAC=$R
+  rd "$p/operstate"; ST=$R
+  rd "$p/speed"; SP=$R
+  rd "$p/duplex"; DX=$R
+  rd "$p/type"; TY=$R
+  DR=$(readlink "$p/device/driver" 2>/dev/null)
+  MS=$(readlink "$p/master" 2>/dev/null)
+  W=0; B=0; PH=0
+  if [ -d "$p/wireless" ] || [ -d "$p/phy80211" ]; then W=1; ANYW=1; fi
+  [ -d "$p/bridge" ] && B=1
+  [ -e "$p/device" ] && PH=1
+  printf 'I\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$MAC" "$ST" "$SP" "$DX" "$TY" "$DR" "$MS" "$W" "$B" "$PH"
+  if [ "$W" = 1 ] && have iw; then
+    iw dev "$n" link </dev/null 2>/dev/null | awk -v n="$n" '/SSID:/ {sub(/^[ \t]*SSID: /, ""); s = $0} /signal:/ {sig = $2} END {if (s != "") printf "WIFI\t%s\t%s\t%s\n", n, s, sig}'
+  fi
+done
+echo '--NMWIFI--'
+if [ "$ANYW" = 1 ] && have nmcli; then
+  nmcli -t -f ACTIVE,DEVICE,SIGNAL,SSID dev wifi list --rescan no </dev/null 2>/dev/null | grep '^yes'
+fi
+
+echo '--ADDR--'
+have ip && ip -o addr show </dev/null 2>/dev/null
+
+echo '--NEIGH--'
+have ip && ip neigh show </dev/null 2>/dev/null
+echo '--NAMES--'
+if have ip && have getent; then
+  TO1=""; have timeout && TO1="timeout 1"
+  ip neigh show </dev/null 2>/dev/null | awk '/lladdr/ && !/FAILED|INCOMPLETE/ {print $1}' | head -n 64 | while read -r IP; do
+    NM=$($TO1 getent hosts "$IP" </dev/null 2>/dev/null | awk '{print $2; exit}')
+    [ -n "$NM" ] && printf 'N\t%s\t%s\n' "$IP" "$NM"
+  done
+fi
+
+echo '--LLDPJSON--'
+have lldpctl && lldpctl -f json </dev/null 2>/dev/null
+echo '--NETWORKCTL--'
+have networkctl && networkctl lldp --no-pager </dev/null 2>/dev/null
+
+echo '--FDB--'
+have bridge && bridge fdb show </dev/null 2>/dev/null
+exit 0
+`;

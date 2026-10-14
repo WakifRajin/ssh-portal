@@ -18,7 +18,8 @@
   "shortcuts": [
     { "name": "New terminal", "short_name": "Terminal", "url": "./?open=terminal", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
     { "name": "Files", "url": "./?open=files", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
-    { "name": "Network tools", "short_name": "Network", "url": "./?open=network", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+    { "name": "Network tools", "short_name": "Network", "url": "./?open=network", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Devices", "url": "./?open=devices", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
   ],
   "protocol_handlers": [{ "protocol": "web+ssh", "url": "./?connect=%s" }],
   "launch_handler": { "client_mode": ["focus-existing", "auto"] }

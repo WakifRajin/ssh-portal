@@ -572,6 +572,15 @@ export function createNetwork(session, info, actions) {
       views[current]?.leave?.();
     },
     open: (sec) => show(sec),
+    // used by the Devices panel: jump to a tool and run it
+    runTool(tool, target) {
+      show('tools');
+      views.tools.run(tool, target);
+    },
+    checkPorts(host) {
+      show('ports');
+      views.ports.check(host);
+    },
     dispose() {
       visible = false;
       views[current]?.leave?.();

@@ -18,13 +18,14 @@ import ssh2 from 'ssh2';
 import { WebSocketServer } from 'ws';
 import { X11Forwarder } from './x11.js';
 import net from 'node:net';
-import { DESKTOP_START, DESKTOP_STOP, SYSINFO, NET_SCAN, NET_INFO } from './remote-scripts.js';
+import { DESKTOP_START, DESKTOP_STOP, SYSINFO, NET_SCAN, NET_INFO, DOCKER_LIST, DEVICES } from './remote-scripts.js';
+import * as admin from './admin.js';
 import { toolCommand, checkPorts, COMMON_PORTS, startForward, wakeOnLan } from './net.js';
 import { isSea } from 'node:sea';
 import { installSelf, setAutostart, autostartEnabled, registerProtocol, uninstall, spawnDetached, openUrl } from './install.js';
 
 const { Client, utils: sshUtils } = ssh2;
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 // Baked in by build.mjs for the downloadable executables.
 const BUILD_APP_URL = process.env.SSH_PORTAL_BUILD_APP_URL || '';
 const BUILD_REPO = process.env.SSH_PORTAL_BUILD_REPO || '';
@@ -203,6 +204,8 @@ class Session {
     // bytes on the wire to the SSH server (after compression), all connections
     this.traffic = { rx: 0, tx: 0, sockets: new Set() };
     this.compress = false;
+    this.priv = null; // { root, sudo } for the remote user, cached
+    this.runtimeName = null; // 'docker' | 'podman'
     ws.on('message', (raw) => this.onMessage(raw));
     ws.on('close', () => this.dispose());
   }
@@ -329,6 +332,13 @@ class Session {
       case 'net.bw': return this.run('cat /proc/net/dev', { timeout: 5000 }).then((r) => ({ t: Date.now(), raw: r.stdout }));
       case 'net.speed': return this.speedTest(a);
       case 'net.publicip': return this.run('curl -s --max-time 5 https://api.ipify.org || wget -qO- -T 5 https://api.ipify.org', { timeout: 8000 }).then((r) => r.stdout.trim());
+      case 'svc.list': return this.svcList(a);
+      case 'svc.status': return this.svcStatus(a);
+      case 'svc.action': return this.svcAction(a);
+      case 'docker.list': return this.dockerList(a);
+      case 'docker.action': return this.dockerAction(a);
+      case 'docker.inspect': return this.dockerInspect(a);
+      case 'devices.scan': return this.devicesScan(a);
       case 'fwd.list': return this.listForwards();
       case 'fwd.add': return this.addForward(a);
       case 'fwd.remove': {
@@ -465,6 +475,8 @@ class Session {
       this.send({ t: 'event', kind: 'closed' });
     });
     this.conn = conn;
+    this.priv = null;
+    this.runtimeName = null;
     this.pool = [{ conn, chans: 0, max: MAIN_CONN_CHANNELS }];
     this.reuse = { host, port, username, method: lastMethod, kbd: kbdAnswers.slice() };
     this.sftp = await new Promise((resolve, reject) => conn.sftp((err, s) => (err ? reject(err) : resolve(s))));
@@ -519,8 +531,13 @@ class Session {
   // ------------------------------------------------------------ streaming ---
   // Long-running diagnostics (ping, traceroute…) stream their output.
   async startStream(a) {
-    const command = toolCommand(a.tool, a.target, a);
+    let command;
+    let password = null;
+    if (a.kind) ({ command, password } = await this.adminStream(a));
+    else command = toolCommand(a.tool, a.target, a);
     const ch = await this.openChannel((conn, cb) => conn.exec(command, cb));
+    // sudo -S reads the password from the first line of stdin
+    if (password != null) ch.write(password + '\n');
     const sid = crypto.randomUUID();
     const dec = new StringDecoder('utf8');
     this.streams.set(sid, ch);
@@ -533,6 +550,27 @@ class Session {
       this.send({ t: 'stream-exit', sid, code: ch.exitCode ?? null });
     });
     return { sid, command };
+  }
+
+  // Command for the admin log streams (journal, container logs).
+  async adminStream(a) {
+    const pw = typeof a.sudoPassword === 'string' && a.sudoPassword ? a.sudoPassword : null;
+    let sudo = false;
+    if (pw) {
+      const { root, sudo: have } = await this.privInfo();
+      if (!root && !have) throw new Error('SUDO_UNAVAILABLE');
+      sudo = !root;
+    }
+    if (a.kind === 'journal') {
+      const r = admin.journalCommand(a, { sudo });
+      return { command: r.command, password: r.sudo ? pw : null };
+    }
+    if (a.kind === 'docker-logs') {
+      const rt = await this.dockerRuntime();
+      if (!rt) throw new Error('Docker or Podman is not installed');
+      return { command: admin.dockerLogsCommand(rt, a, { sudo }), password: sudo ? pw : null };
+    }
+    throw new Error(`Unknown stream kind ${a.kind}`);
   }
 
   stopStream(sid) {
@@ -643,6 +681,125 @@ class Session {
 
   runScript(script, args, opts = {}) {
     return this.run(`sh -s -- ${args.map(shq).join(' ')}`, { ...opts, stdin: script });
+  }
+
+  // ----------------------------------------------------------- privileges ---
+  async privInfo() {
+    if (!this.priv) {
+      const r = await this.run('id -u; command -v sudo >/dev/null 2>&1 && echo sudo', { timeout: 8000 });
+      const l = r.stdout.trim().split('\n');
+      this.priv = { root: l[0] === '0', sudo: l[1] === 'sudo' };
+    }
+    return this.priv;
+  }
+
+  // Run as root: directly, via passwordless sudo, or with a password from the
+  // browser (sent on stdin, never on the command line). Throws SUDO_REQUIRED,
+  // SUDO_FAILED or SUDO_UNAVAILABLE; otherwise returns the run() result.
+  async runPrivileged(command, { sudoPassword = null, timeout = 30_000 } = {}) {
+    const { root, sudo } = await this.privInfo();
+    if (root) return this.run(command, { timeout });
+    if (!sudo) throw new Error('SUDO_UNAVAILABLE');
+    if (!sudoPassword) {
+      const r = await this.run(`sudo -n sh -c ${shq(command)}`, { timeout });
+      if (r.code !== 0 && /a password is required|a terminal is required|no tty present|sudo: .*password/i.test(r.stderr)) throw new Error('SUDO_REQUIRED');
+      return r;
+    }
+    const r = await this.run(`sudo -S -p '' sh -c ${shq(command)}`, { timeout, stdin: sudoPassword + '\n' });
+    if (r.code !== 0 && /incorrect password|Sorry, try again|authentication failure/i.test(r.stderr)) throw new Error('SUDO_FAILED');
+    return r;
+  }
+
+  // ------------------------------------------------------------ services ---
+  async svcList(a) {
+    const scope = admin.scopeOf(a.scope);
+    const res = await this.run(admin.svcListCommand(scope), { timeout: 20_000 });
+    if (/^--NOSYSTEMD--$/m.test(res.stdout)) return { available: false, scope, services: [], error: 'systemd is not available on this machine' };
+    const services = admin.parseSvcList(res.stdout);
+    if (!services.length && res.stderr.trim()) return { available: false, scope, services, error: res.stderr.trim().split('\n')[0] };
+    return { available: true, scope, services };
+  }
+
+  async svcStatus(a) {
+    const unit = admin.validUnit(a.unit);
+    const res = await this.run(admin.svcStatusCommand(unit, admin.scopeOf(a.scope)), { timeout: 15_000 });
+    return admin.parseSvcStatus(unit, res.stdout);
+  }
+
+  async svcAction(a) {
+    const scope = admin.scopeOf(a.scope);
+    const cmd = admin.svcActionCommand(a.unit, a.action, scope);
+    const res = scope === 'user' ? await this.run(cmd, { timeout: 60_000 }) : await this.runPrivileged(cmd, { sudoPassword: a.sudoPassword || null, timeout: 60_000 });
+    if (res.code !== 0) throw new Error(res.stderr.trim() || 'failed');
+    return { ok: true, output: (res.stdout + res.stderr).trim() };
+  }
+
+  // -------------------------------------------------------------- docker ---
+  async dockerRuntime() {
+    if (!this.runtimeName) {
+      const r = await this.run('command -v docker >/dev/null 2>&1 && echo docker || { command -v podman >/dev/null 2>&1 && echo podman; }', { timeout: 8000 });
+      const v = r.stdout.trim();
+      if (v === 'docker' || v === 'podman') this.runtimeName = v;
+    }
+    return this.runtimeName;
+  }
+
+  async dockerList(a) {
+    const rt = await this.dockerRuntime();
+    if (!rt) return admin.parseDockerList(null, '--NOTINSTALLED--\n');
+    const res = a.sudoPassword
+      ? await this.runPrivileged(`sh -c ${shq(DOCKER_LIST)} sh ${shq(rt)}`, { sudoPassword: a.sudoPassword, timeout: 40_000 })
+      : await this.runScript(DOCKER_LIST, [rt], { timeout: 40_000 });
+    return admin.parseDockerList(rt, res.stdout, res.stderr);
+  }
+
+  // Run a runtime command; without a password a socket permission error becomes
+  // SUDO_REQUIRED so the browser can ask for one and retry.
+  async dockerExec(build, a, timeout = 60_000) {
+    const rt = await this.dockerRuntime();
+    if (!rt) throw new Error('Docker or Podman is not installed');
+    const cmd = build(rt);
+    let res;
+    if (a.sudoPassword) res = await this.runPrivileged(cmd, { sudoPassword: a.sudoPassword, timeout });
+    else {
+      res = await this.run(cmd, { timeout });
+      if (res.code !== 0 && admin.isDockerPermission(res.stderr)) throw new Error('SUDO_REQUIRED');
+    }
+    if (res.code !== 0) throw new Error(res.stderr.trim() || 'failed');
+    return res;
+  }
+
+  async dockerAction(a) {
+    const res = await this.dockerExec((rt) => admin.dockerActionCommand(rt, a.action, a.id), a);
+    return { ok: true, output: res.stdout.trim() };
+  }
+
+  async dockerInspect(a) {
+    const res = await this.dockerExec((rt) => admin.dockerInspectCommand(rt, a.id, a.kind), a, 20_000);
+    try {
+      const j = JSON.parse(res.stdout);
+      return Array.isArray(j) ? j[0] : j;
+    } catch {
+      throw new Error('Could not read the inspect output');
+    }
+  }
+
+  // ------------------------------------------------------------- devices ---
+  async devicesScan(a) {
+    const only = a.only === 'usb' ? 'usb' : '';
+    const res = await this.runScript(DEVICES, only ? [only] : [], { timeout: 20_000 });
+    const data = admin.parseDevices(res.stdout, only);
+    if (only) return data;
+    // vendor names for neighbour / bridge MACs: one grep over the OUI database
+    let vendors = new Map();
+    const ouis = admin.collectOuis(data);
+    if (ouis.length) {
+      try {
+        vendors = admin.parseVendors((await this.run(admin.vendorCommand(ouis), { timeout: 8000 })).stdout);
+      } catch {}
+    }
+    admin.applyVendors(data, vendors);
+    return data;
   }
 
   // ---------------------------------------------------------------- sftp ---

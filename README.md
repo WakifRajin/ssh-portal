@@ -27,6 +27,10 @@ A browser workspace for the Linux machines on your local network: a **file explo
 | **Desktop** | The remote's full graphical desktop in the browser (noVNC). Start a **new virtual desktop** (TigerVNC, or Xvfb + x11vnc, auto-starts XFCE/LXQt/MATE/…), **share the physical screen** (x11vnc), or connect to an existing VNC port. The VNC server binds to the remote's localhost and is reached only through the SSH tunnel. Fit/resize/1:1 scaling, clipboard, Ctrl+Alt+Del, fullscreen. |
 | **System** | Live CPU, memory, swap, uptime, disks and a filterable process list with "end process". |
 | **Network** | A toolbox that works from the remote host's point of view: interfaces, routes, DNS and listening ports (with one-click **Forward**); live per-interface bandwidth graphs; ping, traceroute, DNS lookup, HTTP timing check and whois with streaming output; a port checker with presets; a **LAN scan** that finds devices (IP, name, MAC) with quick Ping / Ports / SSH / Wake actions; **port forwarding** (`ssh -L`) and a **SOCKS5 proxy** (`ssh -D`) on 127.0.0.1; a speed test between you and the remote; and **Wake-on-LAN**. |
+| **Services** | Every systemd service on the remote (or just your own user services) with plain status colours, search and filters (Running, Failed, Enabled at boot, Disabled). Start, stop, restart, reload, and switch "starts at boot" on or off. Click a service for its uptime, memory, restart policy and a live log. Actions that need root ask for your sudo password once (kept in memory only, never saved). |
+| **Logs** | A live, searchable view of the system journal: pick a service, a level (Errors / Warnings+ / Info+ / Everything) and a time range, search with highlighting (or on the server), follow or pause, and download what you see. Busy logs stay smooth. "Show all system logs" reads the full journal with sudo. |
+| **Docker** | Containers as cards with live CPU and memory, published ports you can open in your browser through SSH, Start/Stop/Restart/Pause, live logs, a shell inside the container, inspect and remove; plus images, volumes and networks. Explains clearly what to do when Docker isn't installed, isn't running, or your account isn't in the `docker` group (Podman works too). |
+| **Devices** | What is plugged into and around the machine: USB devices (with hot-plug notifications), network links with speed and Wi-Fi signal, **which switch and port each cable goes to** (LLDP, needs `lldpd`), nearby devices with Ping / Check ports / SSH / Wake, disks and mount points (click one to browse it), PCI hardware and Bluetooth. |
 
 **Also:** installable as an app (PWA) with offline start, app shortcuts and `web+ssh://` links. **Data saver** mode (SSH compression, lighter remote desktop, slower polling) with a live traffic meter in the status bar. Automatic **reconnect** that restores your folder and terminal tabs. **Snippets** (saved commands) in the command palette. Drop files onto a terminal to upload them and paste their paths. Save terminal output as text. Activity dots on background terminal tabs, optional bell notifications, **Quick Look** (Space) in Files, Wake buttons on saved machines, and a **?** shortcut sheet.
 
@@ -150,7 +154,7 @@ New versions show an **Update** button; the app never reloads under an active se
 
 ## Keyboard shortcuts
 
-Press **Ctrl+K** anywhere (**Ctrl+Shift+P** inside a terminal, where Ctrl+K stays readline's kill-line) for the command palette, which lists every action, including Network tools and your snippets. Press **?** for the shortcut sheet.
+Press **Ctrl+K** anywhere (**Ctrl+Shift+P** inside a terminal, where Ctrl+K stays readline's kill-line) for the command palette, which lists every action, including Services, Logs, Docker, Devices, Network tools and your snippets. Press **?** for the shortcut sheet.
 
 **Terminals** (Terminator bindings where the browser allows):
 
