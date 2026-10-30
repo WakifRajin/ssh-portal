@@ -1,7 +1,7 @@
 // Service worker: makes SSH Portal installable and lets it open instantly
 // (and offline: the bridge and your LAN don't need the internet).
 // Bump VERSION to roll out a new app shell.
-const VERSION = 'v8';
+const VERSION = 'v9';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 

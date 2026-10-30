@@ -44,10 +44,11 @@ hydrateIcons();
 }
 
 // ------------------------------------------------------------------ theme ---
-// Themes: dark, light and "glass" (liquid glass); no explicit choice = system.
-const THEME_NAMES = { dark: 'Dark', light: 'Light', glass: 'Liquid glass' };
-const THEME_CYCLE = { dark: 'light', light: 'glass', glass: 'dark' };
-const THEME_ICON = { dark: 'moon', light: 'sun', glass: 'droplet' };
+// Themes: dark, light, "glass" (liquid dark) and "glass-light" (liquid light);
+// no explicit choice = system. "glass" keeps its old name so saved choices survive.
+const THEME_NAMES = { dark: 'Dark', light: 'Light', glass: 'Liquid dark', 'glass-light': 'Liquid light' };
+const THEME_CYCLE = { dark: 'light', light: 'glass', glass: 'glass-light', 'glass-light': 'dark' };
+const THEME_ICON = { dark: 'moon', light: 'sun', glass: 'droplet', 'glass-light': 'droplet' };
 
 function currentTheme() {
   return document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -61,8 +62,8 @@ function syncThemeIcons() {
   }
   // browser / installed-app title bar colour
   const explicit = document.documentElement.dataset.theme;
-  const color = { dark: '#0b0d12', light: '#f5f6f8', glass: '#0d1020' }[explicit];
-  for (const m of $$('meta[name="theme-color"]')) m.content = color || (m.media.includes('light') ? '#f5f6f8' : '#0b0d12');
+  const color = { dark: '#0f1012', light: '#f4f3ef', glass: '#121316', 'glass-light': '#ecebe8' }[explicit];
+  for (const m of $$('meta[name="theme-color"]')) m.content = color || (m.media.includes('light') ? '#f4f3ef' : '#0f1012');
 }
 function setTheme(t) {
   if (!t || t === 'system') delete document.documentElement.dataset.theme;
@@ -73,6 +74,22 @@ function setTheme(t) {
 }
 const toggleTheme = () => setTheme(THEME_CYCLE[currentTheme()] || 'dark');
 syncThemeIcons();
+
+// Accent colour: a named preset (CSS :root[data-accent]) or a custom "#rrggbb"
+// set inline. Ember is the default and has no attribute. The inline head
+// script in index.html applies the saved value before first paint.
+const ACCENTS = { ember: ['Ember', '#ff7a45'], phosphor: ['Phosphor', '#4fd18b'], cyan: ['Cyan', '#38c3d9'], blue: ['Blue', '#5c9dff'], violet: ['Violet', '#a58cff'], rose: ['Rose', '#f2668d'], mono: ['Mono', '#e4e4e6'] };
+const currentAccent = () => LS.get('accent', 'ember');
+function setAccent(a) {
+  const root = document.documentElement;
+  const custom = /^#[0-9a-f]{6}$/i.test(a);
+  if (!custom && !ACCENTS[a]) a = 'ember';
+  if (a === 'ember' || custom) delete root.dataset.accent;
+  else root.dataset.accent = a;
+  for (const v of ['--acc-d', '--acc-l']) custom ? root.style.setProperty(v, a) : root.style.removeProperty(v);
+  LS.set('accent', a === 'ember' ? null : a);
+  termMod?.refreshTerminalAppearance();
+}
 
 // --------------------------------------------------------------- pairing ---
 const hashToken = new URLSearchParams(location.hash.slice(1)).get('token');
@@ -600,7 +617,11 @@ async function openSettings() {
   const body = h(`<div class="settings">
     <section><h3>Appearance</h3>
       <div class="segmented" role="radiogroup" aria-label="Theme">
-        ${['system', 'light', 'dark', 'glass'].map((t) => `<label><input type="radio" name="theme" value="${t}" ${(document.documentElement.dataset.theme || 'system') === t ? 'checked' : ''}><span>${t === 'system' ? 'System' : THEME_NAMES[t]}</span></label>`).join('')}
+        ${['system', 'light', 'dark', 'glass', 'glass-light'].map((t) => `<label><input type="radio" name="theme" value="${t}" ${(document.documentElement.dataset.theme || 'system') === t ? 'checked' : ''}><span>${t === 'system' ? 'System' : THEME_NAMES[t]}</span></label>`).join('')}
+      </div>
+      <div class="swatches" role="radiogroup" aria-label="Accent colour">
+        ${Object.entries(ACCENTS).map(([k, [n, c]]) => `<label title="${n}"><input type="radio" name="accent" value="${k}" ${currentAccent() === k ? 'checked' : ''}><span style="--sw:${c}"></span><small>${n}</small></label>`).join('')}
+        <label title="Custom colour"><input type="radio" name="accent" value="custom" ${currentAccent().startsWith('#') ? 'checked' : ''}><span class="sw-custom" style="--sw:${currentAccent().startsWith('#') ? currentAccent() : 'transparent'}"><input type="color" name="accentCustom" value="${currentAccent().startsWith('#') ? currentAccent() : '#ff7a45'}" aria-label="Custom accent colour"></span><small>Custom</small></label>
       </div>
       <button type="button" class="btn btn-sm" data-act="term">${icon('terminal')} Terminal theme &amp; font…</button>
     </section>
@@ -635,6 +656,13 @@ async function openSettings() {
   body.addEventListener('change', async (e) => {
     const t = e.target;
     if (t.name === 'theme') setTheme(t.value);
+    if (t.name === 'accent' && t.value !== 'custom') setAccent(t.value);
+    if (t.name === 'accent' && t.value === 'custom') setAccent($('[name="accentCustom"]', body).value);
+    if (t.name === 'accentCustom') {
+      $('[name="accent"][value="custom"]', body).checked = true;
+      t.parentElement.style.setProperty('--sw', t.value);
+      setAccent(t.value);
+    }
     if (t.name === 'dataSaver') setPrefs({ dataSaver: t.checked });
     if (t.name === 'confirmCloseTerminals') setPrefs({ confirmCloseTerminals: t.checked });
     if (t.name === 'notifyBell') {
@@ -742,6 +770,7 @@ function commands() {
     ...[...tabs.values()].map((t) => ({ group: 'Open tabs', title: `Switch to: ${t.title}`, icon: t.iconName, run: () => activate(t.id) })),
     ...Object.entries(THEME_NAMES).map(([k, n]) => ({ group: 'Theme', title: `Theme: ${n}${currentTheme() === k ? '  ✓' : ''}`, icon: THEME_ICON[k], run: () => setTheme(k) })),
     { group: 'Theme', title: 'Theme: follow system', icon: 'monitor', run: () => setTheme('system') },
+    ...Object.entries(ACCENTS).map(([k, [n]]) => ({ group: 'Theme', title: `Accent: ${n}${currentAccent() === k ? '  ✓' : ''}`, icon: 'droplet', run: () => setAccent(k) })),
     { group: 'Session', title: `${getPrefs().dataSaver ? 'Turn off' : 'Turn on'} data saver`, icon: 'zap', run: () => setPrefs({ dataSaver: !getPrefs().dataSaver }) },
     { group: 'Session', title: 'Preferences…', icon: 'settings', run: openSettings },
     { group: 'Session', title: 'Keyboard shortcuts', icon: 'keyboard', hint: '?', run: showShortcuts },

@@ -6,8 +6,8 @@
   <title>SSH Portal</title>
   <meta name="description" content="Browser-based SSH workspace for machines on your local network: file explorer, split terminals, Linux GUI apps and a full remote desktop.">
   <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
-  <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1012" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f4f3ef" media="(prefers-color-scheme: light)">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -15,12 +15,17 @@
   <meta name="apple-mobile-web-app-title" content="SSH Portal">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Source+Code+Pro:wght@400;700&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&family=Ubuntu+Mono:wght@400;700&family=Source+Code+Pro:wght@400;700&display=swap">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css">
   <link rel="stylesheet" href="css/app.css">
   <script>
-    // apply the saved theme before first paint
-    try { const t = JSON.parse(localStorage.getItem('sshportal.theme')); if (t) document.documentElement.dataset.theme = t; } catch {}
+    // apply the saved theme and accent before first paint
+    try {
+      const r = document.documentElement;
+      const t = JSON.parse(localStorage.getItem('sshportal.theme')); if (t) r.dataset.theme = t;
+      const a = JSON.parse(localStorage.getItem('sshportal.accent'));
+      if (/^#[0-9a-f]{6}$/i.test(a)) { r.style.setProperty('--acc-d', a); r.style.setProperty('--acc-l', a); } else if (a) r.dataset.accent = a;
+    } catch {}
   </script>
   <script type="module">
     if (!('popover' in HTMLElement.prototype)) import('https://cdn.jsdelivr.net/npm/@oddbird/popover-polyfill@0.5.2/dist/popover.min.js');
@@ -41,6 +46,7 @@
 
     <main class="cv-main">
       <section class="cv-intro">
+        <p class="eyebrow">~ $ <b>ssh</b> you@lan · files · terminals · x11 · desktop</p>
         <h1>Your machines,<br><span class="grad">one tab away.</span></h1>
         <p class="lead">Browse files, open split terminals, launch Linux GUI apps, or take over the whole remote desktop. Sign in once.</p>
         <ul class="features">

@@ -19,8 +19,8 @@ const pal = (arr) => Object.fromEntries(KEYS.map((k, i) => [k, arr[i]]));
 export const THEMES = {
   portal: {
     name: 'Portal',
-    background: '#0c0e13', foreground: '#dfe3ea', cursor: '#8aa2ff', cursorAccent: '#0c0e13', selectionBackground: '#33416b',
-    ...pal(['#1d2129', '#ff6b6b', '#7ee787', '#f2cc60', '#79b8ff', '#d2a8ff', '#76e3ea', '#dfe3ea', '#5c6370', '#ff8f8f', '#a5f3a9', '#ffdf85', '#a6d1ff', '#e2c5ff', '#a3f0f5', '#ffffff']),
+    background: '#0e0f11', foreground: '#e0e0e3', cursor: '#ff7a45', cursorAccent: '#0e0f11', selectionBackground: '#3a3b42',
+    ...pal(['#1f2024', '#ff6b6b', '#7ee787', '#f2cc60', '#79b8ff', '#d2a8ff', '#76e3ea', '#dfe3ea', '#5c6370', '#ff8f8f', '#a5f3a9', '#ffdf85', '#a6d1ff', '#e2c5ff', '#a3f0f5', '#ffffff']),
   },
   terminator: {
     name: 'Terminator',
@@ -82,11 +82,17 @@ function fontStack(f) {
   return `"${f}", "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace`;
 }
 
-// The app's liquid-glass theme makes the default (Portal) scheme translucent.
+// The default (Portal) scheme follows the app's accent colour for its cursor,
+// and both liquid-glass themes make it translucent smoked glass.
 function effectiveTheme() {
   const t = THEMES[settings.theme] || THEMES.portal;
-  if (document.documentElement.dataset.theme !== 'glass' || settings.theme !== 'portal') return t;
-  return { ...t, background: 'rgba(10, 12, 26, 0.55)', cursorAccent: '#0a0c1a', selectionBackground: 'rgba(154, 176, 255, 0.35)' };
+  if (settings.theme !== 'portal') return t;
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--acc-d').trim();
+  const themed = /^#[0-9a-f]{6}$/i.test(accent) ? { ...t, cursor: accent } : t;
+  const theme = document.documentElement.dataset.theme;
+  if (!theme?.startsWith('glass')) return themed;
+  // over the pale liquid-light wallpaper a thin smoke turns muddy grey, so it is denser there
+  return { ...themed, background: theme === 'glass-light' ? 'rgba(20, 20, 24, 0.86)' : 'rgba(10, 10, 12, 0.55)', cursorAccent: '#0a0a0c', selectionBackground: 'rgba(255, 255, 255, 0.2)' };
 }
 
 export function refreshTerminalAppearance() {
