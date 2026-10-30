@@ -11,7 +11,14 @@ $url = "https://github.com/$repo/releases/latest/download/ssh-portal-bridge-wind
 $tmp = Join-Path $env:TEMP 'ssh-portal-bridge-setup.exe'
 Write-Host 'Downloading SSH Portal bridge...'
 $ProgressPreference = 'SilentlyContinue'   # much faster downloads in Windows PowerShell
-Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+try {
+  Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+} catch {
+  if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) {
+    throw "The bridge download wasn't found ($url). Either the repository $repo is private (release downloads only work for public repositories), or no release has been published yet (run the 'Release bridge' workflow in the repository's Actions tab)."
+  }
+  throw "Couldn't download the bridge from $url : $($_.Exception.Message)"
+}
 Unblock-File $tmp
 & $tmp --install
 Remove-Item $tmp -ErrorAction SilentlyContinue
