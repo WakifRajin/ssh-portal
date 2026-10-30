@@ -230,6 +230,8 @@ details[open] > summary::before { transform: rotate(45deg); }
 }
 .cv-top { max-width: 1180px; margin: 0 auto; padding: 20px 24px 0; display: flex; align-items: center; justify-content: space-between; }
 .brand { display: flex; align-items: center; gap: 10px; font: 600 14px var(--mono); letter-spacing: -0.02em; }
+/* the mark is a single-colour mask, so it takes the text colour of every theme */
+.logo { display: inline-block; flex: none; width: 26px; height: 26px; background: currentColor; -webkit-mask: url(../logo.svg) center / contain no-repeat; mask: url(../logo.svg) center / contain no-repeat; }
 .cv-main { max-width: 1180px; margin: 0 auto; padding: 36px 24px 56px; display: grid; grid-template-columns: 1fr 460px; gap: 56px; align-items: start; }
 .eyebrow { margin: 0 0 18px; font: 500 12px var(--mono); color: var(--muted); letter-spacing: 0.02em; }
 .eyebrow b { color: var(--accent); font-weight: 600; }
@@ -316,7 +318,7 @@ details[open] > summary::before { transform: rotate(45deg); }
    ===================================================================== */
 .shell { height: 100%; display: grid; grid-template-columns: 56px 1fr; }
 .rail { position: relative; z-index: 30; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; background: var(--bg-elev); border-right: 1px solid var(--line); }
-.rail-logo { margin-bottom: 12px; }
+.rail-logo { width: 28px; height: 28px; margin-bottom: 12px; color: var(--text); }
 .rail-spacer { flex: 1; }
 .rail button { position: relative; width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; transition: background 0.15s, color 0.15s; }
 .rail button .ic { width: 20px; height: 20px; }
@@ -1007,7 +1009,7 @@ mark { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inhe
 
 /* the rail scrolls in short windows so every button stays reachable (tooltips
    would be clipped there, so main.js switches to native ones) */
-.rail > button, .rail > img { flex: none; }
+.rail > button, .rail > .logo { flex: none; }
 @media (max-height: 780px) and (min-width: 761px) {
   .rail { overflow-y: auto; overflow-x: hidden; scrollbar-width: none; padding: 8px 0; }
   .rail::-webkit-scrollbar { display: none; }

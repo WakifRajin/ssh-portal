@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- maskable app icon: full-bleed tile, mark inside the safe zone. Keep the mark in sync with logo.svg. -->
+  <defs>
+    <mask id="screen" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <path d="M27 18.4 L44.2 24.4 V39.6 L27.6 44.6 Z" fill="#fff" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M29.8 26.6 L34.4 30.9 L29.8 35.2 M34.9 37 H39.6" fill="none" stroke="#000" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect width="64" height="64" fill="#141416"/>
+  <g transform="translate(32 32) scale(0.84) translate(-34.5 -30)">
+    <path d="M13.8 18.6 Q13.8 16.9 15.4 16.1 L26.5 10.9 L40.3 17.2 V20.8 L26.6 14.7 Q23.6 13.6 23.6 16.6 V49 L13.8 44.9 Z" fill="#fff"/>
+    <rect width="64" height="64" fill="#fff" mask="url(#screen)"/>
+    <path d="M44.2 31.9 H51" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+    <circle cx="53.2" cy="31.9" r="2.4" fill="#fff"/>
+  </g>
+</svg>

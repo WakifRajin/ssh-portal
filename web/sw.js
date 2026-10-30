@@ -1,7 +1,7 @@
 // Service worker: makes SSH Portal installable and lets it open instantly
 // (and offline: the bridge and your LAN don't need the internet).
 // Bump VERSION to roll out a new app shell.
-const VERSION = 'v9';
+const VERSION = 'v10';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 
@@ -10,6 +10,7 @@ const ASSETS = [
   'index.html',
   'manifest.webmanifest',
   'favicon.svg',
+  'logo.svg',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'css/app.css',
