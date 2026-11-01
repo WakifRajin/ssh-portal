@@ -1,59 +1,35 @@
 # SSH Portal
 
-A browser workspace for the Linux machines on your local network: a **file explorer**, **terminals**, **GUI apps**, and a **full remote desktop**, all in one tab. The web app is static and can be hosted on live websites.
+Use a Linux machine on your network from a browser tab: browse and edit files, open terminals, run GUI apps, see its desktop, and check its system, services, logs, Docker and network.
+
+## How it works
 
 ```
- Browser (GitHub Pages)          Your computer                     LAN machine
-┌──────────────────────┐  WS/HTTP ┌──────────────────┐   SSH    ┌──────────────────┐
-│ Files · Terminal     │ ───────► │  bridge (Node)   │ ───────► │ sshd             │
-│ Desktop · Apps · Sys │ 127.0.0.1│  ssh2 + ws       │  :22     │  SFTP, shells,   │
-└──────────────────────┘   :4422  │                  │ ◄─────── │  X11 channels,   │
-                                  │  X11 ──► local X │  -Y      │  VNC on localhost│
-                                  │  server (VcXsrv, │          └──────────────────┘
-                                  │  XQuartz, Xorg)  │
-                                  └──────────────────┘
+Browser tab (web/)  ──WebSocket──►  bridge (Node.js, on your PC)  ──SSH──►  Linux machine
+                    127.0.0.1:4422
 ```
 
-**Why there's a bridge:** browsers can't open raw TCP connections, so no web page (on GitHub Pages or anywhere else) can speak SSH on its own. The bridge is one small Node.js process on *your* computer. It listens on `127.0.0.1` only and does the SSH work for the page.
+- **`web/`** is the app. It is static HTML/JS with no build step, so it can be hosted on GitHub Pages.
+- **`bridge/`** is a small program that runs on **your own computer**. Browsers can't open SSH connections, so the page sends everything to the bridge, and the bridge talks SSH/SFTP to the Linux machine.
+- The bridge listens on `127.0.0.1` only. A browser must be paired with it once (a click on **Allow**) before it can use it.
+- GUI apps use X11 forwarding (`ssh -Y`) and show up on your PC. The remote desktop is VNC tunnelled over SSH.
 
-## Features
+## Use it
 
-| Tab | What it does |
-|---|---|
-| **Files** | SFTP explorer: breadcrumbs and a typed path bar, back/forward/up, list and grid views, sorting, hidden files, multi-select (Ctrl/Shift), copy/cut/paste, drag-to-move, rename, delete, new file/folder, chmod/properties, folder size, bookmarks, recursive search. Drag & drop files **or whole folders** from your desktop to upload. Download single files, or several items/folders as `.tar.gz`. |
-| **Editor** | Opens text files in a tab with line numbers, Ctrl+S save, soft-wrap, and an unsaved-changes guard. Images open in a preview. |
-| **Terminal** | Terminator-style: any number of tabs, each split into panes **side by side or stacked** as deep as you like. Drag dividers to resize, maximize a pane, move focus with Alt+arrows, and **broadcast** keystrokes to every pane in a tab or to all terminals. Includes find, clickable links, copy-on-select, middle-click paste, and 7 colour schemes (Terminator, Ubuntu, Dracula, Solarized, Nord, …). Every pane shares your one login; the bridge opens extra SSH channels and connections on its own, so you never sign in again. Shells request X11 forwarding, so `firefox` or `gedit` started from any pane opens **on your computer**, like `ssh -Y`. |
-| **Apps** | A start menu built from the remote's installed `.desktop` applications, with categories and search, plus "run any command". Each app runs either on **This computer (ssh -Y)** or inside the **Browser desktop**. Output and a stop button for each launched app. |
-| **Desktop** | The remote's full graphical desktop in the browser (noVNC). Start a **new virtual desktop** (TigerVNC, or Xvfb + x11vnc, auto-starts XFCE/LXQt/MATE/…), **share the physical screen** (x11vnc), or connect to an existing VNC port. The VNC server binds to the remote's localhost and is reached only through the SSH tunnel. Fit/resize/1:1 scaling, clipboard, Ctrl+Alt+Del, fullscreen. |
-| **System** | Live CPU, memory, swap, uptime, disks and a filterable process list with "end process". |
-| **Network** | A toolbox that works from the remote host's point of view: interfaces, routes, DNS and listening ports (with one-click **Forward**); live per-interface bandwidth graphs; ping, traceroute, DNS lookup, HTTP timing check and whois with streaming output; a port checker with presets; a **LAN scan** that finds devices (IP, name, MAC) with quick Ping / Ports / SSH / Wake actions; **port forwarding** (`ssh -L`) and a **SOCKS5 proxy** (`ssh -D`) on 127.0.0.1; a speed test between you and the remote; and **Wake-on-LAN**. |
-| **Services** | Every systemd service on the remote (or just your own user services) with plain status colours, search and filters (Running, Failed, Enabled at boot, Disabled). Start, stop, restart, reload, and switch "starts at boot" on or off. Click a service for its uptime, memory, restart policy and a live log. Actions that need root ask for your sudo password once (kept in memory only, never saved). |
-| **Logs** | A live, searchable view of the system journal: pick a service, a level (Errors / Warnings+ / Info+ / Everything) and a time range, search with highlighting (or on the server), follow or pause, and download what you see. Busy logs stay smooth. "Show all system logs" reads the full journal with sudo. |
-| **Docker** | Containers as cards with live CPU and memory, published ports you can open in your browser through SSH, Start/Stop/Restart/Pause, live logs, a shell inside the container, inspect and remove; plus images, volumes and networks. Explains clearly what to do when Docker isn't installed, isn't running, or your account isn't in the `docker` group (Podman works too). |
-| **Devices** | What is plugged into and around the machine: USB devices (with hot-plug notifications), network links with speed and Wi-Fi signal, **which switch and port each cable goes to** (LLDP, needs `lldpd`), nearby devices with Ping / Check ports / SSH / Wake, disks and mount points (click one to browse it), PCI hardware and Bluetooth. |
+1. Open the hosted app: `https://<owner>.github.io/ssh-portal/`
+2. In the **Bridge** panel, install the bridge (once per computer):
+   - **Windows:** click **Download for Windows**, run it. If SmartScreen appears: More info → Run anyway.
+   - **macOS / Linux:** paste the command the panel shows into a terminal.
+3. Click **Pair this browser**, then **Allow** in the window that opens.
+4. Enter host, username and a password or key, then **Connect**. Confirm the host key fingerprint the first time.
 
-**Also:** installable as an app (PWA) with offline start, app shortcuts and `web+ssh://` links. **Data saver** mode (SSH compression, lighter remote desktop, slower polling) with a live traffic meter in the status bar. Automatic **reconnect** that restores your folder and terminal tabs. **Snippets** (saved commands) in the command palette. Drop files onto a terminal to upload them and paste their paths. Save terminal output as text. Activity dots on background terminal tabs, optional bell notifications, **Quick Look** (Space) in Files, Wake buttons on saved machines, and a **?** shortcut sheet.
+The bridge installs for your user only (no admin rights) and starts at every login. Chrome and Edge may ask to allow access to local network devices: click Allow.
 
-## Quick start
+To remove it, run the program with `--uninstall` (macOS/Linux: `~/.ssh-portal/bin/ssh-portal-bridge --uninstall`; Windows: `%LOCALAPPDATA%\Programs\SSH Portal\ssh-portal-bridge.exe --uninstall`).
 
-1. **Open the web app**: `https://<you>.github.io/ssh-portal/`.
-2. **Set up the bridge once.** The Bridge panel detects your system and walks you through it:
-   * **Windows:** click **Download for Windows** and open the file. If SmartScreen appears: **More info → Run anyway**.
-   * **macOS / Linux:** paste the one-line command it shows into a terminal (`curl -fsSL …/install.sh | sh -s <owner>/<repo>`).
+## Run from source
 
-   The bridge installs for your user only (no admin rights), starts in the background, and starts again at every login. The page notices it within a couple of seconds; no reload needed.
-3. **Click "Pair this browser"**, then **Allow** in the small window that opens. That's once per browser.
-4. **Connect**: host/IP, username, and a password, private key (paste, file, or a path on your computer), or your SSH agent / `~/.ssh/id_*` keys. On first connect you confirm the host key fingerprint (trust on first use); if that key ever changes, you'll see a warning.
-
-Afterwards there's nothing to do: the bridge is already running when you log in. If it isn't (you stopped it), **Start bridge** in the panel, or simply **Connect**, wakes it through the `sshportal://` link on Windows and Linux. On macOS, run `~/.ssh-portal/bin/ssh-portal-bridge --install` again.
-
-Chrome and Edge may ask to **allow access to devices on your local network**. Click Allow: that's how the page reaches the bridge.
-
-The panel's switch turns **start at login** on or off; its buttons stop the bridge or unpair the browser. To remove it completely, run the program with `--uninstall` (Windows: `%LOCALAPPDATA%ProgramsSSH Portalssh-portal-bridge.exe --uninstall`; macOS/Linux: `~/.ssh-portal/bin/ssh-portal-bridge --uninstall`).
-
-### Running the bridge from source instead
-
-Needs Node.js 18+. This is the way to go while developing.
+Needs Node.js 18+.
 
 ```bash
 cd bridge
@@ -61,52 +37,52 @@ npm install
 npm start
 ```
 
-It runs in that terminal. The copy of the app it serves at `http://127.0.0.1:4422/` pairs automatically; the hosted app pairs with the same **Pair this browser** button. `node server.js --install` sets up the login item from source as well.
+Then open `http://127.0.0.1:4422/` (it pairs automatically), or use the hosted app and click **Pair this browser**.
 
-## Setting up X11 forwarding (`ssh -Y`)
+## Optional setup
 
-GUI windows from the remote are drawn by an **X server on your computer**:
+### GUI apps on your PC (X11)
 
-| Your OS | X server | Notes |
-|---|---|---|
-| Windows | [VcXsrv](https://sourceforge.net/projects/vcxsrv/) (XLaunch → Multiple windows) or X410 | The bridge uses `DISPLAY=localhost:0.0` by default. |
-| macOS | [XQuartz](https://www.xquartz.org/) | Log out and back in after installing; start the bridge from an XQuartz terminal so `DISPLAY` is set. |
-| Linux | already running | Start the bridge from your desktop session. |
+You need an X server on your PC:
 
-On the **remote**, `/etc/ssh/sshd_config` needs `X11Forwarding yes`, and `xauth` must be installed (`sudo apt install xauth`).
+| OS | X server |
+|---|---|
+| Windows | [VcXsrv](https://sourceforge.net/projects/vcxsrv/) (XLaunch → Multiple windows) |
+| macOS | [XQuartz](https://www.xquartz.org/) (log out and in after installing, start the bridge from an XQuartz terminal) |
+| Linux | already running |
 
-The Apps tab shows whether the bridge can reach your X server. Like OpenSSH, the bridge gives the remote a random fake MIT-MAGIC-COOKIE and swaps in your real cookie (from `xauth`) locally, so your real cookie never leaves your machine.
+On the remote machine: set `X11Forwarding yes` in `/etc/ssh/sshd_config` and install `xauth` (`sudo apt install xauth`).
 
-No X server? Use the **Desktop** tab and launch apps with **Browser desktop** instead.
+No X server? Use the **Desktop** tab instead.
 
-## Setting up the remote desktop
+### Remote desktop
 
-Install one of these on the remote:
+Install one of these on the remote machine:
 
 ```bash
-# new virtual desktops (recommended)
-sudo apt install tigervnc-standalone-server xfce4
-# or
-sudo apt install xvfb x11vnc xfce4
-# sharing the physical monitor
-sudo apt install x11vnc
+sudo apt install tigervnc-standalone-server xfce4    # new virtual desktop (recommended)
+sudo apt install xvfb x11vnc xfce4                   # alternative
+sudo apt install x11vnc                              # share the physical screen
 ```
 
-SSH Portal starts the VNC server for you (bound to `localhost`, with a random password kept in `~/.ssh-portal/` on the remote) and tunnels it over SSH. **Stop server** shuts it down again.
+SSH Portal starts and stops the VNC server itself.
 
-## Hosting on GitHub Pages
+### Other remote packages
 
-The web app lives in `web/` and needs no build step.
+- `lldpd` for the switch/port info in the Devices tab
+- Docker or Podman for the Docker tab
 
-1. Push this repository to GitHub (branch `main`).
-2. **Settings → Pages → Build and deployment → Source: GitHub Actions.** The workflow in `.github/workflows/pages.yml` publishes `web/` on every push that touches it.
-3. **Publish the bridge downloads:** in the **Actions** tab, run **Release bridge** (or push a tag such as `bridge-v1.2.0`). It builds standalone executables for Windows x64, macOS (Apple Silicon and Intel), and Linux (x64 and ARM64) and attaches them to the latest GitHub release. That's where the app's download buttons and install scripts fetch them from.
+## Host your own copy
 
-The app works out the repository from `<owner>.github.io/<repo>`. On a custom domain, set `REPO` in `web/js/config.js` and start the bridge with `--origin https://ssh.example.com` (or set `SSH_PORTAL_ORIGINS`); the bridge accepts `https://*.github.io` and `localhost` origins by default.
+1. Push the repo to GitHub (branch `main`).
+2. **Settings → Pages → Source: GitHub Actions.** The `pages.yml` workflow publishes `web/`.
+3. In **Actions**, run **Release bridge**. It builds the bridge executables (Windows, macOS, Linux) and attaches them to a release; the app's download buttons and install scripts use them.
 
-When you change the bridge, bump `version` in `bridge/package.json` and `VERSION` in `bridge/server.js`, set `BRIDGE_VERSION` in `web/js/config.js` to match, and run the release again. Pages with an older bridge then show an **Update available** prompt.
+The app finds the repo from `<owner>.github.io/<repo>`. For a custom domain, set `REPO` in `web/js/config.js` and start the bridge with `--origin https://your.domain`.
 
-To build an executable locally for the OS you're on: `cd bridge && npm install && node build.mjs` (the output goes to `bridge/dist/`).
+When you change the bridge, bump `version` in `bridge/package.json` and `VERSION` in `bridge/server.js`, set `BRIDGE_VERSION` in `web/js/config.js` to match, and run the release again.
+
+To build an executable locally: `cd bridge && npm install && node build.mjs` (output in `bridge/dist/`).
 
 ## Bridge options
 
@@ -115,77 +91,18 @@ ssh-portal-bridge [--install | --uninstall | --background | --foreground] [--no-
                   [--port 4422] [--origin URL]... [--app-url URL] [--new-token]
 ```
 
-| Option / env | Meaning |
+| Option | Meaning |
 |---|---|
-| `--port`, `SSH_PORTAL_PORT` | Listen port (always on 127.0.0.1). Default 4422. If you change it, set the same URL under **Advanced** in the app. |
-| `--origin`, `SSH_PORTAL_ORIGINS` | Extra allowed web origins (comma-separated in the env var). |
-| `--app-url`, `SSH_PORTAL_APP_URL` | Your hosted URL, used to print a one-click pairing link. |
-| `--install` / `--uninstall` | Set up (or remove) the per-user install, the login item and the `sshportal://` link. Running the downloaded program with no options does `--install`. |
+| `--port` (`SSH_PORTAL_PORT`) | Listen port, default 4422. If changed, set the same URL under **Advanced** in the app. |
+| `--origin` (`SSH_PORTAL_ORIGINS`) | Extra allowed web origins. `*.github.io` and localhost are allowed by default. |
+| `--app-url` (`SSH_PORTAL_APP_URL`) | Your hosted URL, used to print a pairing link. |
+| `--install` / `--uninstall` | Add or remove the per-user install and login item. |
 | `--no-autostart` | With `--install`: don't start at login. |
-| `--background` | No window; logs go to `~/.ssh-portal/bridge.log`. |
-| `--foreground` | Run the downloaded program in the terminal instead of installing. |
-| `--new-token` | Rotate the pairing token, which un-pairs every browser. |
-| `DISPLAY` | Local X server used for `-Y` windows. |
-
-sshd allows about 10 channels per connection (`MaxSessions`). The bridge keeps up to 6 terminals on your main connection and opens extra connections (9 terminals each) as needed. These reuse the authentication method that already worked, and close themselves when their last terminal does.
-
-## Installing as an app (PWA)
-
-In Chrome or Edge, use the **Install** button in the app (or the install icon in the address bar). You get:
-
-* its own window, with the tabs drawn in the title bar (window controls overlay)
-* a taskbar/Dock icon, with shortcuts for **New terminal**, **Files** and **Network tools**
-* an instant start that works without internet (your LAN and the bridge don't need it)
-* the app registers as the handler for `web+ssh://user@host:port` links
-
-Deep links also work in the browser: `https://<you>.github.io/ssh-portal/?connect=user@host:2222` pre-fills the form and connects straight away if that machine is saved with key or agent login.
-
-New versions show an **Update** button; the app never reloads under an active session.
-
-## Security model
-
-* The bridge binds to **127.0.0.1** only. Other machines on the network can't use it.
-* Each request is checked twice: the browser **Origin** must be allowed, and the control socket must present the **pairing token**. Browsers get the token only when you click **Allow** on the bridge's own pairing page, which shows the requesting site, hands the token only to that origin (`postMessage`), can't be framed, and can't be read with `fetch`. Downloads, uploads and VNC tunnels use **single-use tickets** that expire after 60 seconds, so the token never appears in a URL.
-* Host keys are verified (TOFU) and stored in `~/.ssh-portal/known_hosts.json`.
-* Passwords and keys are never saved by the web app. Saved connections keep only host, port, username, auth type and an optional key *path*.
-* VNC servers listen on the remote's localhost, use a VNC password, and are reachable only through SSH.
-* Port forwards and the SOCKS proxy listen on 127.0.0.1 only and close when you disconnect. Network tool inputs are validated on the bridge (hostnames/IPs only, nothing that looks like a command-line option), so they can't inject shell commands.
-* "Reconnect" keeps your credentials in memory for the current tab only; they're never written to storage.
-
-## Keyboard shortcuts
-
-Press **Ctrl+K** anywhere (**Ctrl+Shift+P** inside a terminal, where Ctrl+K stays readline's kill-line) for the command palette, which lists every action, including Services, Logs, Docker, Devices, Network tools and your snippets. Press **?** for the shortcut sheet.
-
-**Terminals** (Terminator bindings where the browser allows):
-
-| Keys | Action |
-|---|---|
-| Ctrl+Shift+E | Split the focused pane side by side |
-| Ctrl+Shift+O | Split the focused pane top / bottom |
-| Ctrl+Shift+X | Maximize / restore the focused pane (or double-click its title bar) |
-| Alt+Shift+W | Close the focused pane (`exit` / Ctrl+D also closes it) |
-| Alt+Shift+T | New terminal tab |
-| Alt+←/→/↑/↓ | Move focus to the neighbouring pane |
-| Ctrl+Shift+←/→/↑/↓ | Resize the focused pane |
-| Alt+G / Alt+A / Alt+O | Broadcast to this tab / to all terminals / off |
-| Ctrl+Shift+C / V | Copy / paste |
-| Ctrl+Shift+F | Find in scrollback |
-| Ctrl+Shift+G | Clear scrollback |
-| Ctrl + = / − / 0 | Font size bigger / smaller / reset |
-
-Browsers reserve Ctrl+Shift+W and Ctrl+Shift+T, so SSH Portal uses Alt+Shift+W and Alt+Shift+T instead.
-
-**Everywhere else:**
-
-| Keys | Action |
-|---|---|
-| Ctrl+PageUp / PageDown, Alt+1…9 | Switch tabs (you can also drag tabs to reorder them) |
-| Files: Space | Quick Look (peek at a text file or image) |
-| Files: Enter, Backspace, Del, F2, F5, Ctrl+A/C/X/V, Ctrl+H, Alt+←/→ | Open, up, delete, rename, refresh, select all, copy/cut/paste, hidden files, history |
-| Editor: Ctrl+S | Save |
+| `--background` / `--foreground` | Run without a window (logs in `~/.ssh-portal/bridge.log`) / run in the terminal. |
+| `--new-token` | Rotate the pairing token (un-pairs all browsers). |
 
 ## Troubleshooting
 
-* **"No bridge found"**: check that the bridge window is still running, that the port matches **Advanced → Bridge URL**, and that you allowed the local-network prompt. Safari blocks secure pages from talking to localhost, so use Chrome, Edge or Firefox, or use `http://127.0.0.1:4422/`. Brave: turn off Shields for the page.
-* **GUI app doesn't appear**: the Apps tab shows the X server status. Also check `X11Forwarding yes` and `xauth` on the remote, and run `echo $DISPLAY` in an SSH Portal terminal (it should print something like `localhost:10.0`).
-* **Desktop won't start**: the error message names the missing package. Logs are in `~/.ssh-portal/` on the remote.
+- **"No bridge found":** check the bridge is running, the port matches **Advanced → Bridge URL**, and you allowed the local-network prompt. Safari blocks this; use Chrome, Edge or Firefox. In Brave, turn off Shields for the page.
+- **GUI app doesn't appear:** check the X server status in the Apps tab, `X11Forwarding yes` and `xauth` on the remote, and that `echo $DISPLAY` in an SSH Portal terminal prints something like `localhost:10.0`.
+- **Desktop won't start:** the error names the missing package. Logs are in `~/.ssh-portal/` on the remote.
