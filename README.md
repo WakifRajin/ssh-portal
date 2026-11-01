@@ -9,14 +9,14 @@ Browser tab (web/)  ──WebSocket──►  bridge (Node.js, on your PC)  ─�
                     127.0.0.1:4422
 ```
 
-- **`web/`** is the app. It is static HTML/JS with no build step, so it can be hosted on GitHub Pages.
+- **`web/`** is the app. It is static HTML/JS with no build step, so any static host works.
 - **`bridge/`** is a small program that runs on **your own computer**. Browsers can't open SSH connections, so the page sends everything to the bridge, and the bridge talks SSH/SFTP to the Linux machine.
 - The bridge listens on `127.0.0.1` only. A browser must be paired with it once (a click on **Allow**) before it can use it.
 - GUI apps use X11 forwarding (`ssh -Y`) and show up on your PC. The remote desktop is VNC tunnelled over SSH.
 
 ## Use it
 
-1. Open the hosted app: `https://<owner>.github.io/ssh-portal/`
+1. Open the hosted app (the URL where you published `web/`).
 2. In the **Bridge** panel, install the bridge (once per computer):
    - **Windows:** click **Download for Windows**, run it. If SmartScreen appears: More info → Run anyway.
    - **macOS / Linux:** paste the command the panel shows into a terminal.
@@ -74,11 +74,10 @@ SSH Portal starts and stops the VNC server itself.
 
 ## Host your own copy
 
-1. Push the repo to GitHub (branch `main`).
-2. **Settings → Pages → Source: GitHub Actions.** The `pages.yml` workflow publishes `web/`.
-3. In **Actions**, run **Release bridge**. It builds the bridge executables (Windows, macOS, Linux) and attaches them to a release; the app's download buttons and install scripts use them.
+1. Publish the `web/` folder on any static host.
+2. Push the repo to GitHub and, in **Actions**, run **Release bridge**. It builds the bridge executables (Windows, macOS, Linux) and attaches them to a release; the app's download buttons and install scripts use them.
 
-The app finds the repo from `<owner>.github.io/<repo>`. For a custom domain, set `REPO` in `web/js/config.js` and start the bridge with `--origin https://your.domain`.
+Set `REPO` in `web/js/config.js` to your `<owner>/<repo>`, and start the bridge with `--origin https://your.domain` so it accepts your site.
 
 When you change the bridge, bump `version` in `bridge/package.json` and `VERSION` in `bridge/server.js`, set `BRIDGE_VERSION` in `web/js/config.js` to match, and run the release again.
 
@@ -94,7 +93,7 @@ ssh-portal-bridge [--install | --uninstall | --background | --foreground] [--no-
 | Option | Meaning |
 |---|---|
 | `--port` (`SSH_PORTAL_PORT`) | Listen port, default 4422. If changed, set the same URL under **Advanced** in the app. |
-| `--origin` (`SSH_PORTAL_ORIGINS`) | Extra allowed web origins. `*.github.io` and localhost are allowed by default. |
+| `--origin` (`SSH_PORTAL_ORIGINS`) | Extra allowed web origins. Localhost is always allowed. |
 | `--app-url` (`SSH_PORTAL_APP_URL`) | Your hosted URL, used to print a pairing link. |
 | `--install` / `--uninstall` | Add or remove the per-user install and login item. |
 | `--no-autostart` | With `--install`: don't start at login. |
