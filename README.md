@@ -1,6 +1,6 @@
 # SSH Portal
 
-A browser workspace for the Linux machines on your local network: a **file explorer**, **terminals**, **GUI apps through `ssh -Y` X11 forwarding**, and a **full remote desktop**, all in one tab. The web app is static and can be hosted on GitHub Pages.
+A browser workspace for the Linux machines on your local network: a **file explorer**, **terminals**, **GUI apps**, and a **full remote desktop**, all in one tab. The web app is static and can be hosted on live websites.
 
 ```
  Browser (GitHub Pages)          Your computer                     LAN machine
